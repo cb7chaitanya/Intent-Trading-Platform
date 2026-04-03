@@ -4,6 +4,7 @@ mod balances;
 mod db;
 mod ledger;
 mod engine;
+mod markets;
 mod models;
 mod services;
 mod settlement;
@@ -20,6 +21,8 @@ use crate::balances::repository::BalanceRepository;
 use crate::balances::service::BalanceService;
 use crate::ledger::repository::LedgerRepository;
 use crate::ledger::service::LedgerService;
+use crate::markets::repository::MarketRepository;
+use crate::markets::service::MarketService;
 use crate::settlement::engine::SettlementEngine;
 use crate::api::AppState;
 use crate::db::redis::EventBus;
@@ -192,6 +195,26 @@ async fn main() {
     .await
     .expect("Failed to create trades table");
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS markets (
+            id UUID PRIMARY KEY,
+            base_asset asset_type NOT NULL,
+            quote_asset asset_type NOT NULL,
+            tick_size BIGINT NOT NULL,
+            min_order_size BIGINT NOT NULL,
+            fee_rate DOUBLE PRECISION NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (base_asset, quote_asset)
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create markets table");
+
+    // Market service
+    let market_repo = MarketRepository::new(pg_pool.clone());
+    let market_service = Arc::new(MarketService::new(market_repo));
+
     // Settlement engine
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
 
@@ -255,7 +278,8 @@ async fn main() {
         .merge(accounts::router(account_service))
         .merge(balances::router(balance_service))
         .merge(ledger::router(ledger_service))
-        .merge(settlement::router(settlement_engine));
+        .merge(settlement::router(settlement_engine))
+        .merge(markets::router(market_service));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

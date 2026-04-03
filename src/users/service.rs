@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use uuid::Uuid;
+
+use crate::accounts::service::AccountService;
 
 use super::model::{AuthResponse, LoginRequest, RegisterRequest, User};
 use super::repository::UserRepository;
@@ -10,6 +14,7 @@ pub enum UserError {
     InvalidCredentials,
     HashError(String),
     DbError(sqlx::Error),
+    AccountError(String),
 }
 
 impl std::fmt::Display for UserError {
@@ -19,6 +24,7 @@ impl std::fmt::Display for UserError {
             UserError::InvalidCredentials => write!(f, "Invalid email or password"),
             UserError::HashError(e) => write!(f, "Password hash error: {e}"),
             UserError::DbError(e) => write!(f, "Database error: {e}"),
+            UserError::AccountError(e) => write!(f, "Account creation error: {e}"),
         }
     }
 }
@@ -31,11 +37,15 @@ impl From<sqlx::Error> for UserError {
 
 pub struct UserService {
     repo: UserRepository,
+    account_service: Arc<AccountService>,
 }
 
 impl UserService {
-    pub fn new(repo: UserRepository) -> Self {
-        Self { repo }
+    pub fn new(repo: UserRepository, account_service: Arc<AccountService>) -> Self {
+        Self {
+            repo,
+            account_service,
+        }
     }
 
     pub async fn register(&self, req: RegisterRequest) -> Result<AuthResponse, UserError> {
@@ -56,6 +66,12 @@ impl UserService {
         };
 
         self.repo.insert(&user).await?;
+
+        // Create default Spot account
+        self.account_service
+            .create_default_account(user.id)
+            .await
+            .map_err(|e| UserError::AccountError(e.to_string()))?;
 
         Ok(AuthResponse {
             user_id: user.id,

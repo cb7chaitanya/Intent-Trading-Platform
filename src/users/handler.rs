@@ -37,7 +37,7 @@ fn map_error(e: UserError) -> (StatusCode, String) {
     match e {
         UserError::EmailTaken => (StatusCode::CONFLICT, e.to_string()),
         UserError::InvalidCredentials => (StatusCode::UNAUTHORIZED, e.to_string()),
-        UserError::HashError(_) | UserError::DbError(_) => {
+        UserError::HashError(_) | UserError::DbError(_) | UserError::AccountError(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }
     }

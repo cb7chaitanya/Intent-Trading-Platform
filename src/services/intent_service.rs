@@ -6,6 +6,7 @@ use crate::balances::model::Asset;
 use crate::balances::service::{BalanceError, BalanceService};
 use crate::db::redis::{Event, EventBus};
 use crate::db::storage::Storage;
+use crate::db::stream_bus::{StreamBus, STREAM_INTENT_CREATED};
 use crate::models::intent::{Intent, IntentStatus};
 use crate::risk::service::{IntentRiskParams, RiskEngine, RiskRejection};
 
@@ -41,6 +42,7 @@ impl From<redis::RedisError> for IntentError {
 pub struct IntentService {
     storage: Arc<Storage>,
     event_bus: EventBus,
+    stream_bus: Arc<StreamBus>,
     balance_service: Arc<BalanceService>,
     risk_engine: Arc<RiskEngine>,
 }
@@ -49,12 +51,14 @@ impl IntentService {
     pub fn new(
         storage: Arc<Storage>,
         event_bus: EventBus,
+        stream_bus: Arc<StreamBus>,
         balance_service: Arc<BalanceService>,
         risk_engine: Arc<RiskEngine>,
     ) -> Self {
         Self {
             storage,
             event_bus,
+            stream_bus,
             balance_service,
             risk_engine,
         }
@@ -106,6 +110,13 @@ impl IntentService {
         self.event_bus
             .publish(&Event::IntentCreated(intent.clone()))
             .await?;
+
+        // Also publish to Redis Streams for durable delivery
+        let _ = self
+            .stream_bus
+            .publish(STREAM_INTENT_CREATED, &intent)
+            .await;
+
         Ok(intent)
     }
 

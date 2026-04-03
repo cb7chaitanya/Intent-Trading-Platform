@@ -17,5 +17,6 @@ pub fn router(ledger_service: Arc<LedgerService>) -> Router {
             "/ledger/reference/{reference_id}",
             get(handler::get_entries_by_reference),
         )
+        .route("/ledger/{account_id}/balance", get(handler::get_balance))
         .with_state(ledger_service)
 }

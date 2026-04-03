@@ -1,3 +1,4 @@
+mod accounts;
 mod api;
 mod db;
 mod engine;
@@ -10,6 +11,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+use crate::accounts::repository::AccountRepository;
+use crate::accounts::service::AccountService;
 use crate::api::AppState;
 use crate::db::redis::EventBus;
 use crate::db::storage::Storage;
@@ -50,9 +53,36 @@ async fn main() {
     .await
     .expect("Failed to create users table");
 
+    sqlx::query(
+        "DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'account_type') THEN
+                CREATE TYPE account_type AS ENUM ('spot');
+            END IF;
+        END $$",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create account_type enum");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS accounts (
+            id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id),
+            account_type account_type NOT NULL DEFAULT 'spot',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create accounts table");
+
+    // Account service
+    let account_repo = AccountRepository::new(pg_pool.clone());
+    let account_service = Arc::new(AccountService::new(account_repo));
+
     // User service
     let user_repo = UserRepository::new(pg_pool);
-    let user_service = Arc::new(UserService::new(user_repo));
+    let user_service = Arc::new(UserService::new(user_repo, Arc::clone(&account_service)));
 
     // Shared storage
     let storage = Arc::new(Storage::new());
@@ -102,7 +132,8 @@ async fn main() {
 
     let app = api::router(app_state)
         .merge(ws_server.router())
-        .merge(users::router(user_service));
+        .merge(users::router(user_service))
+        .merge(accounts::router(account_service));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

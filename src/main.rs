@@ -4,6 +4,7 @@ mod balances;
 mod db;
 mod ledger;
 mod engine;
+mod fees;
 mod markets;
 mod models;
 mod services;

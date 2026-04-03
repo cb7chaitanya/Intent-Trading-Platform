@@ -210,7 +210,11 @@ async fn main() {
     let ws_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for WsServer");
 
     // Services
-    let intent_service = Arc::new(Mutex::new(IntentService::new(Arc::clone(&storage), intent_bus)));
+    let intent_service = Arc::new(Mutex::new(IntentService::new(
+        Arc::clone(&storage),
+        intent_bus,
+        Arc::clone(&balance_service),
+    )));
     let bid_service = Arc::new(Mutex::new(BidService::new(Arc::clone(&storage), bid_bus)));
 
     // Engines

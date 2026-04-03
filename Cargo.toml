@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "solver-bot"
 path = "src/bin/solver_bot.rs"
 
+[[bin]]
+name = "api-gateway"
+path = "src/bin/api_gateway.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -26,3 +30,9 @@ tokio-tungstenite = "0.26"
 rand = "0.9"
 bcrypt = "0.17"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+http = "1"
+http-body-util = "0.1"

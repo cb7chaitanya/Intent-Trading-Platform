@@ -47,6 +47,10 @@ impl AccountService {
         self.create_default_account(user_id).await
     }
 
+    pub async fn get_account(&self, account_id: Uuid) -> Result<Option<Account>, AccountError> {
+        Ok(self.repo.find_by_id(account_id).await?)
+    }
+
     pub async fn get_accounts(&self, user_id: Uuid) -> Result<Vec<Account>, AccountError> {
         Ok(self.repo.find_by_user_id(user_id).await?)
     }

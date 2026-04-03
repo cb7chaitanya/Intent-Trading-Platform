@@ -26,6 +26,15 @@ impl AccountRepository {
         Ok(())
     }
 
+    pub async fn find_by_id(&self, id: Uuid) -> Result<Option<Account>, sqlx::Error> {
+        sqlx::query_as::<_, Account>(
+            "SELECT id, user_id, account_type, created_at FROM accounts WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     pub async fn find_by_user_id(&self, user_id: Uuid) -> Result<Vec<Account>, sqlx::Error> {
         sqlx::query_as::<_, Account>(
             "SELECT id, user_id, account_type, created_at FROM accounts WHERE user_id = $1",

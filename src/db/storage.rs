@@ -4,6 +4,7 @@ use std::sync::RwLock;
 use uuid::Uuid;
 
 use crate::models::bid::SolverBid;
+use crate::models::execution::Execution;
 use crate::models::fill::Fill;
 use crate::models::intent::Intent;
 
@@ -11,6 +12,7 @@ pub struct Storage {
     intents: RwLock<HashMap<Uuid, Intent>>,
     bids: RwLock<HashMap<Uuid, Vec<SolverBid>>>,
     fills: RwLock<HashMap<Uuid, Fill>>,
+    executions: RwLock<HashMap<Uuid, Execution>>,
 }
 
 impl Storage {
@@ -19,6 +21,7 @@ impl Storage {
             intents: RwLock::new(HashMap::new()),
             bids: RwLock::new(HashMap::new()),
             fills: RwLock::new(HashMap::new()),
+            executions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -62,5 +65,23 @@ impl Storage {
 
     pub fn get_fill(&self, intent_id: &Uuid) -> Option<Fill> {
         self.fills.read().unwrap().get(intent_id).cloned()
+    }
+
+    pub fn insert_execution(&self, execution: Execution) {
+        self.executions
+            .write()
+            .unwrap()
+            .insert(execution.intent_id, execution);
+    }
+
+    pub fn get_execution(&self, intent_id: &Uuid) -> Option<Execution> {
+        self.executions.read().unwrap().get(intent_id).cloned()
+    }
+
+    pub fn update_execution(&self, execution: Execution) {
+        self.executions
+            .write()
+            .unwrap()
+            .insert(execution.intent_id, execution);
     }
 }

@@ -109,8 +109,12 @@ export default function MarketPage() {
         {/* Right: Intent Form + Open Intents */}
         <div className="lg:col-span-4 space-y-4">
           <IntentForm
-            defaultTokenIn={market?.base_asset}
-            defaultTokenOut={market?.quote_asset}
+            marketId={marketId}
+            balances={{}}
+            baseAsset={market?.base_asset}
+            quoteAsset={market?.quote_asset}
+            tickSize={market?.tick_size}
+            minOrderSize={market?.min_order_size}
           />
 
           <div className="card space-y-3">

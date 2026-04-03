@@ -46,6 +46,8 @@ fn map_error(e: SettlementError) -> (StatusCode, String) {
         SettlementError::TradeNotFound => (StatusCode::NOT_FOUND, e.to_string()),
         SettlementError::AlreadySettled => (StatusCode::CONFLICT, e.to_string()),
         SettlementError::InsufficientBalance => (StatusCode::BAD_REQUEST, e.to_string()),
-        SettlementError::DbError(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        SettlementError::FeeError(_) | SettlementError::DbError(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
     }
 }

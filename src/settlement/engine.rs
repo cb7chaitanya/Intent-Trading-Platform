@@ -3,7 +3,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::balances::model::{Asset, Balance};
+use crate::fees::service as fee_engine;
 use crate::ledger::model::{EntryType, LedgerEntry, ReferenceType};
+use crate::markets::model::Market;
 
 use super::model::{CreateTradeRequest, Trade, TradeStatus};
 
@@ -14,6 +16,7 @@ pub enum SettlementError {
     TradeNotFound,
     AlreadySettled,
     InsufficientBalance,
+    FeeError(String),
     DbError(sqlx::Error),
 }
 
@@ -23,6 +26,7 @@ impl std::fmt::Display for SettlementError {
             SettlementError::TradeNotFound => write!(f, "Trade not found"),
             SettlementError::AlreadySettled => write!(f, "Trade already settled"),
             SettlementError::InsufficientBalance => write!(f, "Insufficient balance for settlement"),
+            SettlementError::FeeError(e) => write!(f, "Fee error: {e}"),
             SettlementError::DbError(e) => write!(f, "Database error: {e}"),
         }
     }
@@ -165,6 +169,85 @@ impl SettlementEngine {
             settled_at: Some(now),
             ..trade
         })
+    }
+
+    /// Settle a trade using market-driven fee calculation.
+    /// Fees are computed from the market's fee_rate and applied atomically.
+    pub async fn settle_trade_with_market(
+        &self,
+        trade_id: Uuid,
+        market: &Market,
+    ) -> Result<(Trade, fee_engine::FeeBreakdown), SettlementError> {
+        let mut tx = self.pool.begin().await?;
+
+        let trade = sqlx::query_as::<_, Trade>("SELECT * FROM trades WHERE id = $1 FOR UPDATE")
+            .bind(trade_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(SettlementError::TradeNotFound)?;
+
+        if trade.status == TradeStatus::Settled {
+            return Err(SettlementError::AlreadySettled);
+        }
+
+        let now = Utc::now();
+
+        // Calculate fees from market config
+        let fees = fee_engine::calculate_fees(&trade, market);
+
+        // Asset swaps (excluding fees — fee engine handles those)
+        let seller_receives = trade.amount_in - fees.total_fee;
+
+        debit_balance(&mut tx, trade.buyer_account_id, &trade.asset_in, trade.amount_in, now)
+            .await
+            .map_err(|_| SettlementError::InsufficientBalance)?;
+
+        credit_balance(&mut tx, trade.seller_account_id, &trade.asset_in, seller_receives, now).await?;
+
+        credit_balance(&mut tx, trade.buyer_account_id, &trade.asset_out, trade.amount_out, now).await?;
+
+        debit_balance(&mut tx, trade.seller_account_id, &trade.asset_out, trade.amount_out, now)
+            .await
+            .map_err(|_| SettlementError::InsufficientBalance)?;
+
+        // Trade ledger entries
+        insert_ledger(&mut tx, trade.buyer_account_id, &trade.asset_in, trade.amount_in,
+            EntryType::CREDIT, ReferenceType::TRADE, trade.id, now).await?;
+        insert_ledger(&mut tx, trade.buyer_account_id, &trade.asset_out, trade.amount_out,
+            EntryType::DEBIT, ReferenceType::TRADE, trade.id, now).await?;
+        insert_ledger(&mut tx, trade.seller_account_id, &trade.asset_in, seller_receives,
+            EntryType::DEBIT, ReferenceType::TRADE, trade.id, now).await?;
+        insert_ledger(&mut tx, trade.seller_account_id, &trade.asset_out, trade.amount_out,
+            EntryType::CREDIT, ReferenceType::TRADE, trade.id, now).await?;
+
+        // Apply fees atomically in the same transaction
+        fee_engine::apply_fees(&mut tx, &trade, &fees)
+            .await
+            .map_err(|e| SettlementError::FeeError(e.to_string()))?;
+
+        // Update trade with calculated fees and mark settled
+        sqlx::query(
+            "UPDATE trades SET platform_fee = $1, solver_fee = $2, status = $3, settled_at = $4 WHERE id = $5",
+        )
+        .bind(fees.platform_fee)
+        .bind(fees.solver_fee)
+        .bind(TradeStatus::Settled)
+        .bind(now)
+        .bind(trade.id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        let settled = Trade {
+            platform_fee: fees.platform_fee,
+            solver_fee: fees.solver_fee,
+            status: TradeStatus::Settled,
+            settled_at: Some(now),
+            ..trade
+        };
+
+        Ok((settled, fees))
     }
 
     pub async fn get_trade(&self, trade_id: Uuid) -> Result<Option<Trade>, SettlementError> {

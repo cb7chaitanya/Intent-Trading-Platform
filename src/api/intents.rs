@@ -60,6 +60,7 @@ fn map_error(e: IntentError) -> (StatusCode, String) {
     match e {
         IntentError::InsufficientBalance => (StatusCode::BAD_REQUEST, e.to_string()),
         IntentError::InvalidAsset(_) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+        IntentError::RiskRejected(_) => (StatusCode::FORBIDDEN, e.to_string()),
         IntentError::IntentNotFound => (StatusCode::NOT_FOUND, e.to_string()),
         IntentError::RedisError(_) | IntentError::BalanceError(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())

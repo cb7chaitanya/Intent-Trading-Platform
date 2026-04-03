@@ -1,5 +1,10 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use uuid::Uuid;
+
+use crate::ledger::model::{EntryType, ReferenceType};
+use crate::ledger::service::LedgerService;
 
 use super::model::{Asset, Balance};
 use super::repository::BalanceRepository;
@@ -10,6 +15,7 @@ pub enum BalanceError {
     InsufficientLockedBalance,
     InvalidAmount,
     DbError(sqlx::Error),
+    LedgerError(String),
 }
 
 impl std::fmt::Display for BalanceError {
@@ -19,6 +25,7 @@ impl std::fmt::Display for BalanceError {
             BalanceError::InsufficientLockedBalance => write!(f, "Insufficient locked balance"),
             BalanceError::InvalidAmount => write!(f, "Amount must be positive"),
             BalanceError::DbError(e) => write!(f, "Database error: {e}"),
+            BalanceError::LedgerError(e) => write!(f, "Ledger error: {e}"),
         }
     }
 }
@@ -31,11 +38,12 @@ impl From<sqlx::Error> for BalanceError {
 
 pub struct BalanceService {
     repo: BalanceRepository,
+    ledger: Arc<LedgerService>,
 }
 
 impl BalanceService {
-    pub fn new(repo: BalanceRepository) -> Self {
-        Self { repo }
+    pub fn new(repo: BalanceRepository, ledger: Arc<LedgerService>) -> Self {
+        Self { repo, ledger }
     }
 
     pub async fn deposit(
@@ -52,6 +60,20 @@ impl BalanceService {
         balance.available_balance += amount;
         balance.updated_at = Utc::now();
         self.repo.update(&balance).await?;
+
+        let reference_id = Uuid::new_v4();
+        self.ledger
+            .create_entry(
+                account_id,
+                asset,
+                amount,
+                EntryType::DEBIT,
+                ReferenceType::DEPOSIT,
+                reference_id,
+            )
+            .await
+            .map_err(|e| BalanceError::LedgerError(e.to_string()))?;
+
         Ok(balance)
     }
 
@@ -73,6 +95,20 @@ impl BalanceService {
         balance.available_balance -= amount;
         balance.updated_at = Utc::now();
         self.repo.update(&balance).await?;
+
+        let reference_id = Uuid::new_v4();
+        self.ledger
+            .create_entry(
+                account_id,
+                asset,
+                amount,
+                EntryType::CREDIT,
+                ReferenceType::WITHDRAWAL,
+                reference_id,
+            )
+            .await
+            .map_err(|e| BalanceError::LedgerError(e.to_string()))?;
+
         Ok(balance)
     }
 
@@ -146,6 +182,19 @@ impl BalanceService {
 
         self.repo.update(&from).await?;
         self.repo.update(&to).await?;
+
+        let reference_id = Uuid::new_v4();
+        self.ledger
+            .create_double_entry(
+                from_account_id,
+                to_account_id,
+                asset,
+                amount,
+                ReferenceType::TRADE,
+                reference_id,
+            )
+            .await
+            .map_err(|e| BalanceError::LedgerError(e.to_string()))?;
 
         Ok((from, to))
     }

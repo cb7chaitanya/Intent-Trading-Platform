@@ -44,6 +44,8 @@ fn map_error(e: BalanceError) -> (StatusCode, String) {
             (StatusCode::BAD_REQUEST, e.to_string())
         }
         BalanceError::InvalidAmount => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
-        BalanceError::DbError(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        BalanceError::DbError(_) | BalanceError::LedgerError(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
     }
 }

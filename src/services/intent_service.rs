@@ -2,33 +2,82 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::balances::model::Asset;
+use crate::balances::service::{BalanceError, BalanceService};
 use crate::db::redis::{Event, EventBus};
 use crate::db::storage::Storage;
 use crate::models::intent::{Intent, IntentStatus};
 
+#[derive(Debug)]
+pub enum IntentError {
+    InsufficientBalance,
+    InvalidAsset(String),
+    IntentNotFound,
+    RedisError(redis::RedisError),
+    BalanceError(String),
+}
+
+impl std::fmt::Display for IntentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IntentError::InsufficientBalance => write!(f, "Insufficient balance"),
+            IntentError::InvalidAsset(a) => write!(f, "Invalid asset: {a}"),
+            IntentError::IntentNotFound => write!(f, "Intent not found"),
+            IntentError::RedisError(e) => write!(f, "Redis error: {e}"),
+            IntentError::BalanceError(e) => write!(f, "Balance error: {e}"),
+        }
+    }
+}
+
+impl From<redis::RedisError> for IntentError {
+    fn from(e: redis::RedisError) -> Self {
+        IntentError::RedisError(e)
+    }
+}
+
 pub struct IntentService {
     storage: Arc<Storage>,
     event_bus: EventBus,
+    balance_service: Arc<BalanceService>,
 }
 
 impl IntentService {
-    pub fn new(storage: Arc<Storage>, event_bus: EventBus) -> Self {
+    pub fn new(
+        storage: Arc<Storage>,
+        event_bus: EventBus,
+        balance_service: Arc<BalanceService>,
+    ) -> Self {
         Self {
             storage,
             event_bus,
+            balance_service,
         }
     }
 
     pub async fn create_intent(
         &mut self,
         user_id: String,
+        account_id: Uuid,
         token_in: String,
         token_out: String,
         amount_in: u64,
         min_amount_out: u64,
         deadline: i64,
-    ) -> Result<Intent, redis::RedisError> {
-        let intent = Intent::new(user_id, token_in, token_out, amount_in, min_amount_out, deadline);
+    ) -> Result<Intent, IntentError> {
+        let asset = parse_asset(&token_in)?;
+
+        // Lock funds for this intent
+        self.balance_service
+            .lock_balance(account_id, asset, amount_in as i64)
+            .await
+            .map_err(|e| match e {
+                BalanceError::InsufficientBalance => IntentError::InsufficientBalance,
+                other => IntentError::BalanceError(other.to_string()),
+            })?;
+
+        let intent = Intent::new(
+            user_id, token_in, token_out, amount_in, min_amount_out, deadline,
+        );
         self.storage.insert_intent(intent.clone());
         self.event_bus
             .publish(&Event::IntentCreated(intent.clone()))
@@ -58,10 +107,19 @@ impl IntentService {
     pub async fn cancel_intent(
         &mut self,
         intent_id: &Uuid,
-    ) -> Result<Option<Intent>, redis::RedisError> {
+        account_id: Uuid,
+    ) -> Result<Option<Intent>, IntentError> {
         let Some(mut intent) = self.storage.get_intent(intent_id) else {
             return Ok(None);
         };
+
+        // Unlock funds
+        let asset = parse_asset(&intent.token_in)?;
+        self.balance_service
+            .unlock_balance(account_id, asset, intent.amount_in as i64)
+            .await
+            .map_err(|e| IntentError::BalanceError(e.to_string()))?;
+
         intent.status = IntentStatus::Cancelled;
         self.storage.update_intent(intent.clone());
         self.event_bus
@@ -70,10 +128,34 @@ impl IntentService {
         Ok(Some(intent))
     }
 
+    pub async fn fail_intent(
+        &mut self,
+        intent_id: &Uuid,
+        account_id: Uuid,
+    ) -> Result<Option<Intent>, IntentError> {
+        let Some(mut intent) = self.storage.get_intent(intent_id) else {
+            return Ok(None);
+        };
+
+        // Unlock funds
+        let asset = parse_asset(&intent.token_in)?;
+        self.balance_service
+            .unlock_balance(account_id, asset, intent.amount_in as i64)
+            .await
+            .map_err(|e| IntentError::BalanceError(e.to_string()))?;
+
+        intent.status = IntentStatus::Failed;
+        self.storage.update_intent(intent.clone());
+        self.event_bus
+            .publish(&Event::IntentFailed(intent.clone()))
+            .await?;
+        Ok(Some(intent))
+    }
+
     pub async fn start_bidding(
         &mut self,
         intent_id: &Uuid,
-    ) -> Result<Option<Intent>, redis::RedisError> {
+    ) -> Result<Option<Intent>, IntentError> {
         let Some(mut intent) = self.storage.get_intent(intent_id) else {
             return Ok(None);
         };
@@ -83,5 +165,15 @@ impl IntentService {
             .publish(&Event::IntentBidding(intent.clone()))
             .await?;
         Ok(Some(intent))
+    }
+}
+
+fn parse_asset(token: &str) -> Result<Asset, IntentError> {
+    match token.to_uppercase().as_str() {
+        "USDC" => Ok(Asset::USDC),
+        "ETH" => Ok(Asset::ETH),
+        "BTC" => Ok(Asset::BTC),
+        "SOL" => Ok(Asset::SOL),
+        other => Err(IntentError::InvalidAsset(other.to_string())),
     }
 }

@@ -8,6 +8,7 @@ mod fees;
 mod market_data;
 mod markets;
 mod models;
+mod risk;
 mod services;
 mod settlement;
 mod solver_reputation;
@@ -28,6 +29,7 @@ use crate::market_data::repository::MarketDataRepository;
 use crate::market_data::service::MarketDataService;
 use crate::markets::repository::MarketRepository;
 use crate::markets::service::MarketService;
+use crate::risk::service::RiskEngine;
 use crate::settlement::engine::SettlementEngine;
 use crate::solver_reputation::repository::SolverRepository;
 use crate::solver_reputation::service::SolverReputationService;
@@ -279,11 +281,18 @@ async fn main() {
     let execution_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for ExecutionEngine");
     let ws_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for WsServer");
 
+    // Risk engine
+    let risk_engine = Arc::new(RiskEngine::new(
+        Arc::clone(&balance_service),
+        Arc::clone(&market_service),
+    ));
+
     // Services
     let intent_service = Arc::new(Mutex::new(IntentService::new(
         Arc::clone(&storage),
         intent_bus,
         Arc::clone(&balance_service),
+        Arc::clone(&risk_engine),
     )));
     let bid_service = Arc::new(Mutex::new(BidService::new(Arc::clone(&storage), bid_bus)));
 

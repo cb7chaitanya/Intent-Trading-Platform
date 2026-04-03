@@ -1,0 +1,59 @@
+use std::sync::Arc;
+
+use uuid::Uuid;
+
+use crate::db::redis::{Event, EventBus};
+use crate::db::storage::Storage;
+use crate::models::bid::SolverBid;
+
+pub struct BidService {
+    storage: Arc<Storage>,
+    event_bus: EventBus,
+}
+
+impl BidService {
+    pub fn new(storage: Arc<Storage>, event_bus: EventBus) -> Self {
+        Self {
+            storage,
+            event_bus,
+        }
+    }
+
+    pub async fn submit_bid(
+        &mut self,
+        intent_id: Uuid,
+        solver_id: String,
+        amount_out: u64,
+        fee: u64,
+    ) -> Result<SolverBid, redis::RedisError> {
+        let bid = SolverBid::new(intent_id, solver_id, amount_out, fee);
+        self.storage.insert_bid(bid.clone());
+        self.event_bus
+            .publish(&Event::BidSubmitted(bid.clone()))
+            .await?;
+        Ok(bid)
+    }
+
+    pub fn get_bids(&self, intent_id: &Uuid) -> Vec<SolverBid> {
+        self.storage.get_bids(intent_id)
+    }
+
+    pub fn get_best_bid(&self, intent_id: &Uuid) -> Option<SolverBid> {
+        let bids = self.storage.get_bids(intent_id);
+        bids.into_iter().max_by(|a, b| {
+            let net_a = a.amount_out.saturating_sub(a.fee);
+            let net_b = b.amount_out.saturating_sub(b.fee);
+            net_a.cmp(&net_b).then(b.timestamp.cmp(&a.timestamp))
+        })
+    }
+
+    pub fn build_orderbook(&self, intent_id: &Uuid) -> Vec<SolverBid> {
+        let mut bids = self.storage.get_bids(intent_id);
+        bids.sort_by(|a, b| {
+            let net_a = a.amount_out.saturating_sub(a.fee);
+            let net_b = b.amount_out.saturating_sub(b.fee);
+            net_b.cmp(&net_a).then(a.timestamp.cmp(&b.timestamp))
+        });
+        bids
+    }
+}

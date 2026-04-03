@@ -104,4 +104,12 @@ impl LedgerService {
     ) -> Result<Vec<LedgerEntry>, LedgerError> {
         Ok(self.repo.find_by_reference_id(reference_id).await?)
     }
+
+    pub async fn get_balance(
+        &self,
+        account_id: Uuid,
+        asset: Asset,
+    ) -> Result<i64, LedgerError> {
+        Ok(self.repo.compute_balance(account_id, &asset).await?)
+    }
 }

@@ -5,6 +5,7 @@ mod db;
 mod ledger;
 mod engine;
 mod fees;
+mod market_data;
 mod markets;
 mod models;
 mod services;
@@ -22,6 +23,8 @@ use crate::balances::repository::BalanceRepository;
 use crate::balances::service::BalanceService;
 use crate::ledger::repository::LedgerRepository;
 use crate::ledger::service::LedgerService;
+use crate::market_data::repository::MarketDataRepository;
+use crate::market_data::service::MarketDataService;
 use crate::markets::repository::MarketRepository;
 use crate::markets::service::MarketService;
 use crate::settlement::engine::SettlementEngine;
@@ -216,6 +219,26 @@ async fn main() {
     let market_repo = MarketRepository::new(pg_pool.clone());
     let market_service = Arc::new(MarketService::new(market_repo));
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS market_trades (
+            id UUID PRIMARY KEY,
+            market_id UUID NOT NULL REFERENCES markets(id),
+            buyer_account_id UUID NOT NULL REFERENCES accounts(id),
+            seller_account_id UUID NOT NULL REFERENCES accounts(id),
+            price BIGINT NOT NULL,
+            qty BIGINT NOT NULL,
+            fee BIGINT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create market_trades table");
+
+    // Market data service
+    let market_data_repo = MarketDataRepository::new(pg_pool.clone());
+    let market_data_service = Arc::new(MarketDataService::new(market_data_repo));
+
     // Settlement engine
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
 
@@ -280,7 +303,8 @@ async fn main() {
         .merge(balances::router(balance_service))
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
-        .merge(markets::router(market_service));
+        .merge(markets::router(market_service))
+        .merge(market_data::router(market_data_service));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

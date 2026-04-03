@@ -15,6 +15,8 @@ pub const INTENT_MATCHED: &str = "intent_matched";
 pub const EXECUTION_STARTED: &str = "execution_started";
 pub const EXECUTION_COMPLETED: &str = "execution_completed";
 pub const EXECUTION_FAILED: &str = "execution_failed";
+pub const INTENT_CANCELLED: &str = "intent_cancelled";
+pub const INTENT_BIDDING: &str = "intent_bidding";
 
 pub const ALL_CHANNELS: &[&str] = &[
     INTENT_CREATED,
@@ -23,6 +25,8 @@ pub const ALL_CHANNELS: &[&str] = &[
     EXECUTION_STARTED,
     EXECUTION_COMPLETED,
     EXECUTION_FAILED,
+    INTENT_CANCELLED,
+    INTENT_BIDDING,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +38,8 @@ pub enum Event {
     ExecutionStarted(Execution),
     ExecutionCompleted(Execution),
     ExecutionFailed { execution: Execution, reason: String },
+    IntentCancelled(Intent),
+    IntentBidding(Intent),
 }
 
 impl Event {
@@ -45,6 +51,8 @@ impl Event {
             Event::ExecutionStarted(_) => EXECUTION_STARTED,
             Event::ExecutionCompleted(_) => EXECUTION_COMPLETED,
             Event::ExecutionFailed { .. } => EXECUTION_FAILED,
+            Event::IntentCancelled(_) => INTENT_CANCELLED,
+            Event::IntentBidding(_) => INTENT_BIDDING,
         }
     }
 }

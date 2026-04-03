@@ -6,10 +6,12 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::models::intent::Intent;
+use crate::services::intent_service::IntentError;
 
 #[derive(Deserialize)]
 pub struct CreateIntentRequest {
     pub user_id: String,
+    pub account_id: Uuid,
     pub token_in: String,
     pub token_out: String,
     pub amount_in: u64,
@@ -25,6 +27,7 @@ pub async fn create_intent(
     let intent = svc
         .create_intent(
             req.user_id,
+            req.account_id,
             req.token_in,
             req.token_out,
             req.amount_in,
@@ -32,7 +35,7 @@ pub async fn create_intent(
             req.deadline,
         )
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(map_error)?;
     Ok((StatusCode::CREATED, Json(intent)))
 }
 
@@ -51,4 +54,15 @@ pub async fn get_intent(
     svc.get_intent(&id)
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
+}
+
+fn map_error(e: IntentError) -> (StatusCode, String) {
+    match e {
+        IntentError::InsufficientBalance => (StatusCode::BAD_REQUEST, e.to_string()),
+        IntentError::InvalidAsset(_) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+        IntentError::IntentNotFound => (StatusCode::NOT_FOUND, e.to_string()),
+        IntentError::RedisError(_) | IntentError::BalanceError(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+        }
+    }
 }

@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --surface-0: #ffffff;
+    --surface-1: #f8fafc;
+    --surface-2: #f1f5f9;
+    --surface-3: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --border: #e2e8f0;
+  }
+
+  .dark {
+    --surface-0: #0b0f19;
+    --surface-1: #111827;
+    --surface-2: #1e293b;
+    --surface-3: #334155;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border: #1e293b;
+  }
+
+  body {
+    background-color: var(--surface-0);
+    color: var(--text-primary);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border bg-surface-1 p-4 transition-colors;
+  }
+  .card-hover {
+    @apply card hover:bg-surface-2 cursor-pointer;
+  }
+  .input {
+    @apply w-full rounded-lg border bg-surface-2 px-3 py-2.5 text-sm outline-none
+           placeholder:text-[var(--text-muted)]
+           focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500
+           transition-all;
+  }
+  .btn-primary {
+    @apply rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-medium text-white
+           hover:bg-brand-700 active:bg-brand-800
+           focus:ring-2 focus:ring-brand-500/40 focus:outline-none
+           disabled:opacity-50 disabled:cursor-not-allowed
+           transition-all;
+  }
+  .btn-success {
+    @apply rounded-lg bg-up px-4 py-2.5 text-sm font-medium text-white
+           hover:bg-green-600 active:bg-green-700
+           focus:ring-2 focus:ring-green-500/40 focus:outline-none
+           disabled:opacity-50 disabled:cursor-not-allowed
+           transition-all;
+  }
+  .btn-danger {
+    @apply rounded-lg bg-down px-4 py-2.5 text-sm font-medium text-white
+           hover:bg-red-600 active:bg-red-700
+           focus:ring-2 focus:ring-red-500/40 focus:outline-none
+           disabled:opacity-50 disabled:cursor-not-allowed
+           transition-all;
+  }
+  .btn-ghost {
+    @apply rounded-lg px-3 py-2 text-sm font-medium
+           text-[var(--text-secondary)] hover:bg-surface-2 active:bg-surface-3
+           transition-all;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-success {
+    @apply badge bg-green-500/10 text-up;
+  }
+  .badge-danger {
+    @apply badge bg-red-500/10 text-down;
+  }
+  .badge-warning {
+    @apply badge bg-yellow-500/10 text-yellow-500;
+  }
+  .badge-info {
+    @apply badge bg-brand-500/10 text-brand-400;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

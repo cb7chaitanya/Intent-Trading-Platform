@@ -37,6 +37,7 @@ use crate::services::bid_service::BidService;
 use crate::services::intent_service::IntentService;
 use crate::users::repository::UserRepository;
 use crate::users::service::UserService;
+use crate::ws::feed::WsFeed;
 use crate::ws::server::WsServer;
 
 const REDIS_URL: &str = "redis://127.0.0.1:6379";
@@ -268,7 +269,10 @@ async fn main() {
     let auction_engine = AuctionEngine::new(Arc::clone(&storage), auction_bus);
     let execution_engine = ExecutionEngine::new(Arc::clone(&storage), execution_bus);
 
-    // WebSocket server
+    // WebSocket feed (per-market subscriptions)
+    let ws_feed = Arc::new(WsFeed::new());
+
+    // WebSocket server (global Redis relay on /ws)
     let ws_server = WsServer::new();
     let ws_redis_client = ws_bus.client().clone();
 
@@ -304,7 +308,8 @@ async fn main() {
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
         .merge(markets::router(market_service))
-        .merge(market_data::router(market_data_service));
+        .merge(market_data::router(market_data_service))
+        .merge(ws::router(ws_feed));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

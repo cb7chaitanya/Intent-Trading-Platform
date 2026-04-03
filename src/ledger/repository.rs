@@ -1,6 +1,8 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::balances::model::Asset;
+
 use super::model::LedgerEntry;
 
 pub struct LedgerRepository {
@@ -52,5 +54,23 @@ impl LedgerRepository {
         .bind(reference_id)
         .fetch_all(&self.pool)
         .await
+    }
+
+    pub async fn compute_balance(
+        &self,
+        account_id: Uuid,
+        asset: &Asset,
+    ) -> Result<i64, sqlx::Error> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COALESCE(
+                SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE -amount END),
+                0
+            ) FROM ledger_entries WHERE account_id = $1 AND asset = $2",
+        )
+        .bind(account_id)
+        .bind(asset)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
     }
 }

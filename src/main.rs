@@ -2,9 +2,11 @@ mod accounts;
 mod api;
 mod balances;
 mod db;
+mod ledger;
 mod engine;
 mod models;
 mod services;
+mod settlement;
 mod users;
 mod ws;
 
@@ -16,6 +18,9 @@ use crate::accounts::repository::AccountRepository;
 use crate::accounts::service::AccountService;
 use crate::balances::repository::BalanceRepository;
 use crate::balances::service::BalanceService;
+use crate::ledger::repository::LedgerRepository;
+use crate::ledger::service::LedgerService;
+use crate::settlement::engine::SettlementEngine;
 use crate::api::AppState;
 use crate::db::redis::EventBus;
 use crate::db::storage::Storage;
@@ -105,13 +110,90 @@ async fn main() {
     .await
     .expect("Failed to create balances table");
 
+    sqlx::query(
+        "DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'entry_type') THEN
+                CREATE TYPE entry_type AS ENUM ('DEBIT', 'CREDIT');
+            END IF;
+        END $$",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create entry_type enum");
+
+    sqlx::query(
+        "DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'reference_type') THEN
+                CREATE TYPE reference_type AS ENUM ('TRADE', 'DEPOSIT', 'WITHDRAWAL', 'FEE');
+            END IF;
+        END $$",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create reference_type enum");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ledger_entries (
+            id UUID PRIMARY KEY,
+            account_id UUID NOT NULL REFERENCES accounts(id),
+            asset asset_type NOT NULL,
+            amount BIGINT NOT NULL,
+            entry_type entry_type NOT NULL,
+            reference_type reference_type NOT NULL,
+            reference_id UUID NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create ledger_entries table");
+
     // Account service
     let account_repo = AccountRepository::new(pg_pool.clone());
     let account_service = Arc::new(AccountService::new(account_repo));
 
+    // Ledger service
+    let ledger_repo = LedgerRepository::new(pg_pool.clone());
+    let ledger_service = Arc::new(LedgerService::new(ledger_repo));
+
     // Balance service
     let balance_repo = BalanceRepository::new(pg_pool.clone());
-    let balance_service = Arc::new(BalanceService::new(balance_repo));
+    let balance_service = Arc::new(BalanceService::new(balance_repo, Arc::clone(&ledger_service)));
+
+    sqlx::query(
+        "DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'trade_status') THEN
+                CREATE TYPE trade_status AS ENUM ('pending', 'settled', 'failed');
+            END IF;
+        END $$",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create trade_status enum");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS trades (
+            id UUID PRIMARY KEY,
+            buyer_account_id UUID NOT NULL REFERENCES accounts(id),
+            seller_account_id UUID NOT NULL REFERENCES accounts(id),
+            solver_account_id UUID NOT NULL REFERENCES accounts(id),
+            asset_in asset_type NOT NULL,
+            asset_out asset_type NOT NULL,
+            amount_in BIGINT NOT NULL,
+            amount_out BIGINT NOT NULL,
+            platform_fee BIGINT NOT NULL DEFAULT 0,
+            solver_fee BIGINT NOT NULL DEFAULT 0,
+            status trade_status NOT NULL DEFAULT 'pending',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            settled_at TIMESTAMPTZ
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create trades table");
+
+    // Settlement engine
+    let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
 
     // User service
     let user_repo = UserRepository::new(pg_pool);
@@ -167,7 +249,9 @@ async fn main() {
         .merge(ws_server.router())
         .merge(users::router(user_service))
         .merge(accounts::router(account_service))
-        .merge(balances::router(balance_service));
+        .merge(balances::router(balance_service))
+        .merge(ledger::router(ledger_service))
+        .merge(settlement::router(settlement_engine));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

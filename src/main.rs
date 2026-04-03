@@ -1,5 +1,6 @@
 mod accounts;
 mod api;
+mod balances;
 mod db;
 mod engine;
 mod models;
@@ -13,6 +14,8 @@ use tokio::sync::Mutex;
 
 use crate::accounts::repository::AccountRepository;
 use crate::accounts::service::AccountService;
+use crate::balances::repository::BalanceRepository;
+use crate::balances::service::BalanceService;
 use crate::api::AppState;
 use crate::db::redis::EventBus;
 use crate::db::storage::Storage;
@@ -76,9 +79,39 @@ async fn main() {
     .await
     .expect("Failed to create accounts table");
 
+    sqlx::query(
+        "DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'asset_type') THEN
+                CREATE TYPE asset_type AS ENUM ('USDC', 'ETH', 'BTC', 'SOL');
+            END IF;
+        END $$",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create asset_type enum");
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS balances (
+            id UUID PRIMARY KEY,
+            account_id UUID NOT NULL REFERENCES accounts(id),
+            asset asset_type NOT NULL,
+            available_balance BIGINT NOT NULL DEFAULT 0,
+            locked_balance BIGINT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (account_id, asset)
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create balances table");
+
     // Account service
     let account_repo = AccountRepository::new(pg_pool.clone());
     let account_service = Arc::new(AccountService::new(account_repo));
+
+    // Balance service
+    let balance_repo = BalanceRepository::new(pg_pool.clone());
+    let balance_service = Arc::new(BalanceService::new(balance_repo));
 
     // User service
     let user_repo = UserRepository::new(pg_pool);
@@ -133,7 +166,8 @@ async fn main() {
     let app = api::router(app_state)
         .merge(ws_server.router())
         .merge(users::router(user_service))
-        .merge(accounts::router(account_service));
+        .merge(accounts::router(account_service))
+        .merge(balances::router(balance_service));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

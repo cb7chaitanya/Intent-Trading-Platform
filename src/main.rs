@@ -3,6 +3,7 @@ mod db;
 mod engine;
 mod models;
 mod services;
+mod users;
 mod ws;
 
 use std::sync::Arc;
@@ -16,14 +17,42 @@ use crate::engine::auction_engine::AuctionEngine;
 use crate::engine::execution_engine::ExecutionEngine;
 use crate::services::bid_service::BidService;
 use crate::services::intent_service::IntentService;
+use crate::users::repository::UserRepository;
+use crate::users::service::UserService;
 use crate::ws::server::WsServer;
 
 const REDIS_URL: &str = "redis://127.0.0.1:6379";
+const DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5432/intent_trading";
 const SERVER_ADDR: &str = "0.0.0.0:3000";
 
 #[tokio::main]
 async fn main() {
     println!("Starting Intent-Based Trading Platform...");
+
+    // PostgreSQL connection pool
+    let pg_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(DATABASE_URL)
+        .await
+        .expect("Failed to connect to PostgreSQL");
+
+    // Run migrations / ensure table exists
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id UUID PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )",
+    )
+    .execute(&pg_pool)
+    .await
+    .expect("Failed to create users table");
+
+    // User service
+    let user_repo = UserRepository::new(pg_pool);
+    let user_service = Arc::new(UserService::new(user_repo));
 
     // Shared storage
     let storage = Arc::new(Storage::new());
@@ -71,7 +100,9 @@ async fn main() {
         bid_service,
     };
 
-    let app = api::router(app_state).merge(ws_server.router());
+    let app = api::router(app_state)
+        .merge(ws_server.router())
+        .merge(users::router(user_service));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

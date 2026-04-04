@@ -6,6 +6,7 @@ use crate::balances::model::{Asset, Balance};
 use crate::fees::service as fee_engine;
 use crate::ledger::model::{EntryType, LedgerEntry, ReferenceType};
 use crate::markets::model::Market;
+use crate::metrics::{counters, histograms};
 
 use super::model::{CreateTradeRequest, Trade, TradeStatus};
 
@@ -95,6 +96,7 @@ impl SettlementEngine {
     }
 
     pub async fn settle_trade(&self, trade_id: Uuid) -> Result<Trade, SettlementError> {
+        let settle_start = std::time::Instant::now();
         let mut tx = self.pool.begin().await?;
 
         // Fetch trade inside transaction
@@ -163,6 +165,9 @@ impl SettlementEngine {
             .await?;
 
         tx.commit().await?;
+
+        counters::SETTLEMENT_SUCCESS_TOTAL.inc();
+        histograms::SETTLEMENT_DURATION.observe(settle_start.elapsed().as_secs_f64());
 
         Ok(Trade {
             status: TradeStatus::Settled,

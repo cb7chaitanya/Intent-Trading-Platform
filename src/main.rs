@@ -334,9 +334,10 @@ async fn main() {
     // Background task: intent expiry worker
     let expiry_pool = health_pool.clone();
     let expiry_event_bus = Arc::new(Mutex::new(expiry_bus));
+    let expiry_stream_bus = Arc::clone(&stream_bus);
     let token = shutdown.token();
     bg_tasks.push(tokio::spawn(async move {
-        workers::intent_expiry::run(expiry_pool, expiry_event_bus, token).await;
+        workers::intent_expiry::run(expiry_pool, expiry_event_bus, expiry_stream_bus, token).await;
     }));
 
     // Background task: JWT key rotation

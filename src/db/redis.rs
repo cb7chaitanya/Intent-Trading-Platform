@@ -20,6 +20,7 @@ pub const INTENT_BIDDING: &str = "intent_bidding";
 pub const INTENT_FAILED: &str = "intent_failed";
 pub const INTENT_EXPIRED: &str = "intent_expired";
 pub const INTENT_AMENDED: &str = "intent_amended";
+pub const STOP_TRIGGERED: &str = "stop_triggered";
 
 pub const ALL_CHANNELS: &[&str] = &[
     INTENT_CREATED,
@@ -33,6 +34,7 @@ pub const ALL_CHANNELS: &[&str] = &[
     INTENT_FAILED,
     INTENT_EXPIRED,
     INTENT_AMENDED,
+    STOP_TRIGGERED,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +51,7 @@ pub enum Event {
     IntentFailed(Intent),
     IntentExpired(Intent),
     IntentAmended(Intent),
+    StopTriggered(Intent),
 }
 
 impl Event {
@@ -65,6 +68,7 @@ impl Event {
             Event::IntentFailed(_) => INTENT_FAILED,
             Event::IntentExpired(_) => INTENT_EXPIRED,
             Event::IntentAmended(_) => INTENT_AMENDED,
+            Event::StopTriggered(_) => STOP_TRIGGERED,
         }
     }
 }

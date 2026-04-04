@@ -37,6 +37,8 @@ pub struct Intent {
     pub order_type: OrderType,
     pub limit_price: Option<i64>,
     pub stop_price: Option<i64>,
+    pub stop_side: Option<String>,
+    pub triggered_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl Intent {
@@ -61,6 +63,8 @@ impl Intent {
             order_type: OrderType::Market,
             limit_price: None,
             stop_price: None,
+            stop_side: None,
+            triggered_at: None,
         }
     }
 
@@ -70,10 +74,36 @@ impl Intent {
         self
     }
 
+    /// Stop-loss sell: triggers when price falls to/below stop_price.
+    pub fn with_stop_loss(mut self, price: i64) -> Self {
+        self.order_type = OrderType::Stop;
+        self.stop_price = Some(price);
+        self.stop_side = Some("sell".to_string());
+        self
+    }
+
+    /// Stop-buy: triggers when price rises to/above stop_price.
+    pub fn with_stop_buy(mut self, price: i64) -> Self {
+        self.order_type = OrderType::Stop;
+        self.stop_price = Some(price);
+        self.stop_side = Some("buy".to_string());
+        self
+    }
+
+    /// Stop-limit: triggers at stop_price, then becomes a limit order at limit_price.
+    pub fn with_stop_limit(mut self, stop: i64, limit: i64, side: &str) -> Self {
+        self.order_type = OrderType::Stop;
+        self.stop_price = Some(stop);
+        self.limit_price = Some(limit);
+        self.stop_side = Some(side.to_string());
+        self
+    }
+
+    /// Legacy stop (defaults to sell/stop-loss).
     pub fn with_stop(mut self, price: i64) -> Self {
         self.order_type = OrderType::Stop;
         self.stop_price = Some(price);
-        self.status = IntentStatus::Open; // stays open until triggered
+        self.stop_side = Some("sell".to_string());
         self
     }
 }

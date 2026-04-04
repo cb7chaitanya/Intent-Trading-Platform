@@ -264,6 +264,8 @@ mod tests {
             order_type: OrderType::Market,
             limit_price: None,
             stop_price: None,
+            stop_side: None,
+            triggered_at: None,
         }
     }
 

@@ -8,6 +8,7 @@ mod ledger;
 mod engine;
 mod fees;
 mod health;
+mod idempotency;
 mod market_data;
 mod markets;
 mod metrics;
@@ -128,6 +129,7 @@ async fn main() {
 
     // Postgres-backed storage for intents, bids, fills, executions
     let health_pool = pg_pool.clone();
+    let idempotency_pool = pg_pool.clone();
     let storage = Arc::new(Storage::new(pg_pool));
 
     // Each component gets its own EventBus (separate Redis connections)
@@ -271,12 +273,13 @@ async fn main() {
         bid_service,
     };
 
-    // Protected routes (JWT required)
+    // Protected routes (JWT required, idempotency-checked)
     let protected = api::router(app_state)
         .merge(accounts::router(account_service))
         .merge(balances::router(balance_service))
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
+        .layer(idempotency::IdempotencyLayer::new(idempotency_pool))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 
     // Health check routes

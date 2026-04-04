@@ -19,6 +19,7 @@ mod settlement;
 mod shutdown;
 mod solver_reputation;
 mod users;
+mod workers;
 mod ws;
 
 use std::sync::Arc;
@@ -138,6 +139,7 @@ async fn main() {
     let auction_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for AuctionEngine");
     let execution_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExecutionEngine");
     let ws_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for WsServer");
+    let expiry_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExpiryWorker");
 
     // Risk engine
     let risk_engine = Arc::new(RiskEngine::new(
@@ -264,6 +266,14 @@ async fn main() {
     let token = shutdown.token();
     bg_tasks.push(tokio::spawn(async move {
         settlement::retry::run_retry_worker(retry_pool, retry_engine, token).await;
+    }));
+
+    // Background task: intent expiry worker
+    let expiry_pool = health_pool.clone();
+    let expiry_event_bus = Arc::new(Mutex::new(expiry_bus));
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        workers::intent_expiry::run(expiry_pool, expiry_event_bus, token).await;
     }));
 
     // Build combined router

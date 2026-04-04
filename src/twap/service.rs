@@ -187,27 +187,68 @@ impl TwapService {
             .bind(id).fetch_optional(&self.pool).await?)
     }
 
-    /// Record a child intent completion. Updates parent progress.
+    /// Record a child intent completion. Idempotent — skips if already recorded.
     pub async fn record_child_completed(
         &self,
         twap_id: Uuid,
         child_id: Uuid,
         filled_qty: i64,
     ) -> Result<(), TwapError> {
-        sqlx::query("UPDATE twap_child_intents SET status = 'completed' WHERE id = $1")
-            .bind(child_id).execute(&self.pool).await?;
+        // Idempotency: only update if child is not already completed
+        let result = sqlx::query(
+            "UPDATE twap_child_intents SET status = 'completed'
+             WHERE id = $1 AND status != 'completed'",
+        )
+        .bind(child_id).execute(&self.pool).await?;
+
+        if result.rows_affected() == 0 {
+            tracing::debug!(child_id = %child_id, "twap_child_already_completed");
+            return Ok(());
+        }
 
         sqlx::query(
             "UPDATE twap_intents SET filled_qty = filled_qty + $1, slices_completed = slices_completed + 1 WHERE id = $2",
         )
         .bind(filled_qty).bind(twap_id).execute(&self.pool).await?;
 
-        // Check if all slices done
+        // Check completion
         let twap = self.get_twap(twap_id).await?.ok_or(TwapError::NotFound)?;
-        if twap.slices_completed >= twap.slices_total {
-            sqlx::query("UPDATE twap_intents SET status = 'completed', finished_at = NOW() WHERE id = $1")
+        if twap.filled_qty >= twap.total_qty || twap.slices_completed >= twap.slices_total {
+            sqlx::query("UPDATE twap_intents SET status = 'completed', finished_at = NOW() WHERE id = $1 AND status = 'active'")
                 .bind(twap_id).execute(&self.pool).await?;
             tracing::info!(twap_id = %twap_id, filled_qty = twap.filled_qty, "twap_completed");
+        }
+
+        Ok(())
+    }
+
+    /// Record a child intent as expired. Idempotent.
+    pub async fn record_child_expired(
+        &self,
+        twap_id: Uuid,
+        child_id: Uuid,
+    ) -> Result<(), TwapError> {
+        let result = sqlx::query(
+            "UPDATE twap_child_intents SET status = 'expired'
+             WHERE id = $1 AND status NOT IN ('completed', 'expired')",
+        )
+        .bind(child_id).execute(&self.pool).await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(());
+        }
+
+        sqlx::query(
+            "UPDATE twap_intents SET slices_completed = slices_completed + 1 WHERE id = $1",
+        )
+        .bind(twap_id).execute(&self.pool).await?;
+
+        // Check if all slices done (some expired, some completed)
+        let twap = self.get_twap(twap_id).await?.ok_or(TwapError::NotFound)?;
+        if twap.slices_completed >= twap.slices_total && twap.filled_qty < twap.total_qty {
+            sqlx::query("UPDATE twap_intents SET status = 'failed', finished_at = NOW() WHERE id = $1 AND status = 'active'")
+                .bind(twap_id).execute(&self.pool).await?;
+            tracing::warn!(twap_id = %twap_id, filled = twap.filled_qty, total = twap.total_qty, "twap_expired_incomplete");
         }
 
         Ok(())
@@ -217,7 +258,7 @@ impl TwapService {
         &self,
         child_id: Uuid,
     ) -> Result<(), TwapError> {
-        sqlx::query("UPDATE twap_child_intents SET status = 'failed' WHERE id = $1")
+        sqlx::query("UPDATE twap_child_intents SET status = 'failed' WHERE id = $1 AND status != 'failed'")
             .bind(child_id).execute(&self.pool).await?;
         Ok(())
     }

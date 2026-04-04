@@ -16,6 +16,7 @@ pub const STREAM_TRADE_SETTLED: &str = "stream:trade.settled";
 pub const STREAM_BALANCE_UPDATED: &str = "stream:balance.updated";
 pub const STREAM_MARKET_TRADE: &str = "stream:market.trade";
 pub const STREAM_EXECUTION_COMPLETED: &str = "stream:execution.completed";
+pub const STREAM_INTENT_SETTLED: &str = "stream:intent.settled";
 
 pub const ALL_STREAMS: &[&str] = &[
     STREAM_INTENT_CREATED,
@@ -26,6 +27,7 @@ pub const ALL_STREAMS: &[&str] = &[
     STREAM_BALANCE_UPDATED,
     STREAM_MARKET_TRADE,
     STREAM_EXECUTION_COMPLETED,
+    STREAM_INTENT_SETTLED,
 ];
 
 /// A typed stream event with JSON payload.

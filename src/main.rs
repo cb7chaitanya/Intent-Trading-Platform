@@ -7,6 +7,7 @@ mod engine;
 mod fees;
 mod market_data;
 mod markets;
+mod metrics;
 mod models;
 mod risk;
 mod services;
@@ -53,6 +54,9 @@ const SERVER_ADDR: &str = "0.0.0.0:3000";
 #[tokio::main]
 async fn main() {
     println!("Starting Intent-Based Trading Platform...");
+
+    // Initialize all Prometheus metrics
+    metrics::init();
 
     // PostgreSQL connection pool
     let pg_pool = sqlx::postgres::PgPoolOptions::new()
@@ -391,7 +395,8 @@ async fn main() {
         .merge(markets::router(market_service))
         .merge(market_data::router(market_data_service))
         .merge(ws::router(ws_feed))
-        .merge(solver_reputation::router(solver_service));
+        .merge(solver_reputation::router(solver_service))
+        .merge(metrics::router());
 
     // Start server
     let listener = tokio::net::TcpListener::bind(SERVER_ADDR)

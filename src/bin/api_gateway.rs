@@ -13,6 +13,8 @@ async fn main() {
         )
         .init();
 
+    intent_trading::metrics::init();
+
     tracing::info!("Starting API Gateway on {GATEWAY_ADDR}");
     tracing::info!("Upstream: {UPSTREAM_URL}");
 

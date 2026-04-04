@@ -51,14 +51,12 @@ impl ExecutionEngine {
                 }
             };
 
-            if let Event::IntentMatched { intent, bid } = event {
+            if let Event::IntentMatched { intent, bid: _ } = event {
                 let storage = Arc::clone(&self.storage);
                 let event_bus = Arc::clone(&self.event_bus);
                 let duration = self.execution_duration_secs;
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        execute_intent(storage, event_bus, intent.id, bid.solver_id, duration).await
-                    {
+                    if let Err(e) = execute_fills(storage, event_bus, intent.id, duration).await {
                         tracing::error!(intent_id = %intent.id, error = %e, "execution_failed");
                     }
                 });
@@ -69,66 +67,96 @@ impl ExecutionEngine {
     }
 }
 
-async fn execute_intent(
+/// Execute all fills for an intent. Each fill gets its own execution record.
+async fn execute_fills(
     storage: Arc<Storage>,
     event_bus: Arc<Mutex<EventBus>>,
     intent_id: Uuid,
-    solver_id: String,
     execution_duration_secs: u64,
 ) -> Result<(), redis::RedisError> {
-    let exec_start = std::time::Instant::now();
-    let tx_hash = format!("0x{}", Uuid::new_v4().simple());
+    let fills = storage.get_fills(&intent_id).await;
+    if fills.is_empty() {
+        tracing::warn!(intent_id = %intent_id, "No fills to execute");
+        return Ok(());
+    }
 
     tracing::info!(
         intent_id = %intent_id,
-        solver_id = %solver_id,
-        tx_hash = %tx_hash,
-        "trade_execution_started"
+        fill_count = fills.len(),
+        "executing_fills"
     );
 
-    let mut execution = Execution::new(intent_id, solver_id, tx_hash);
-
-    execution.status = ExecutionStatus::Executing;
-    let _ = storage.insert_execution(&execution).await;
-
+    // Mark intent as executing
     if let Some(mut intent) = storage.get_intent(&intent_id).await {
         intent.status = IntentStatus::Executing;
         let _ = storage.update_intent(&intent).await;
     }
 
-    event_bus
-        .lock()
-        .await
-        .publish(&Event::ExecutionStarted(execution.clone()))
-        .await?;
+    // Execute each fill
+    for fill in &fills {
+        let exec_start = std::time::Instant::now();
+        let tx_hash = format!("0x{}", Uuid::new_v4().simple());
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(execution_duration_secs)).await;
+        tracing::info!(
+            intent_id = %intent_id,
+            fill_id = %fill.id,
+            solver_id = %fill.solver_id,
+            filled_qty = fill.filled_qty,
+            tx_hash = %tx_hash,
+            "fill_execution_started"
+        );
 
-    execution.status = ExecutionStatus::Completed;
-    let _ = storage.update_execution(&execution).await;
+        let mut execution = Execution::new(
+            intent_id,
+            fill.solver_id.clone(),
+            tx_hash,
+        );
+        execution.status = ExecutionStatus::Executing;
+        let _ = storage.insert_execution(&execution).await;
 
+        event_bus
+            .lock()
+            .await
+            .publish(&Event::ExecutionStarted(execution.clone()))
+            .await?;
+
+        // Simulate execution time
+        tokio::time::sleep(tokio::time::Duration::from_secs(execution_duration_secs)).await;
+
+        execution.status = ExecutionStatus::Completed;
+        let _ = storage.update_execution(&execution).await;
+
+        let execution_id = execution.id;
+        event_bus
+            .lock()
+            .await
+            .publish(&Event::ExecutionCompleted(execution))
+            .await?;
+
+        let duration_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
+        counters::TRADES_TOTAL.inc();
+        counters::TRADES_PER_SECOND.inc();
+        histograms::TRADE_EXECUTION_DURATION.observe(exec_start.elapsed().as_secs_f64());
+
+        tracing::info!(
+            intent_id = %intent_id,
+            execution_id = %execution_id,
+            fill_id = %fill.id,
+            duration_ms = duration_ms,
+            "fill_executed"
+        );
+    }
+
+    // Mark intent as completed
     if let Some(mut intent) = storage.get_intent(&intent_id).await {
         intent.status = IntentStatus::Completed;
         let _ = storage.update_intent(&intent).await;
     }
 
-    let execution_id = execution.id;
-    event_bus
-        .lock()
-        .await
-        .publish(&Event::ExecutionCompleted(execution))
-        .await?;
-
-    let duration_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
-    counters::TRADES_TOTAL.inc();
-    counters::TRADES_PER_SECOND.inc();
-    histograms::TRADE_EXECUTION_DURATION.observe(exec_start.elapsed().as_secs_f64());
-
     tracing::info!(
         intent_id = %intent_id,
-        execution_id = %execution_id,
-        duration_ms = duration_ms,
-        "trade_executed"
+        fills_executed = fills.len(),
+        "intent_execution_completed"
     );
 
     Ok(())

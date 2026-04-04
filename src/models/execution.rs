@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "execution_status", rename_all = "lowercase")]
 pub enum ExecutionStatus {
     Pending,
     Executing,
@@ -9,7 +10,7 @@ pub enum ExecutionStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Execution {
     pub id: Uuid,
     pub intent_id: Uuid,

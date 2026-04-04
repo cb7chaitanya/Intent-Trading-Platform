@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "intent_status", rename_all = "lowercase")]
 pub enum IntentStatus {
     Open,
     Bidding,
@@ -12,14 +13,14 @@ pub enum IntentStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Intent {
     pub id: Uuid,
     pub user_id: String,
     pub token_in: String,
     pub token_out: String,
-    pub amount_in: u64,
-    pub min_amount_out: u64,
+    pub amount_in: i64,
+    pub min_amount_out: i64,
     pub deadline: i64,
     pub status: IntentStatus,
     pub created_at: i64,
@@ -39,8 +40,8 @@ impl Intent {
             user_id,
             token_in,
             token_out,
-            amount_in,
-            min_amount_out,
+            amount_in: amount_in as i64,
+            min_amount_out: min_amount_out as i64,
             deadline,
             status: IntentStatus::Open,
             created_at: chrono::Utc::now().timestamp(),

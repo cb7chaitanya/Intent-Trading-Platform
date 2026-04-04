@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct SolverBid {
     pub id: Uuid,
     pub intent_id: Uuid,
     pub solver_id: String,
-    pub amount_out: u64,
-    pub fee: u64,
+    pub amount_out: i64,
+    pub fee: i64,
     pub timestamp: i64,
 }
 
@@ -22,8 +22,8 @@ impl SolverBid {
             id: Uuid::new_v4(),
             intent_id,
             solver_id,
-            amount_out,
-            fee,
+            amount_out: amount_out as i64,
+            fee: fee as i64,
             timestamp: chrono::Utc::now().timestamp(),
         }
     }

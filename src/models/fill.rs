@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Fill {
     pub intent_id: Uuid,
     pub solver_id: String,
-    pub price: u64,
-    pub qty: u64,
+    pub price: i64,
+    pub qty: i64,
     pub tx_hash: String,
     pub timestamp: i64,
 }
@@ -22,8 +22,8 @@ impl Fill {
         Self {
             intent_id,
             solver_id,
-            price,
-            qty,
+            price: price as i64,
+            qty: qty as i64,
             tx_hash,
             timestamp: chrono::Utc::now().timestamp(),
         }

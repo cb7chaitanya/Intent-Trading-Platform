@@ -39,7 +39,7 @@ pub async fn register(
 
     let roles = state
         .rbac_service
-        .get_user_role_names(auth.user_id)
+        .get_user_permission_strings(auth.user_id)
         .await
         .unwrap_or_else(|_| vec!["trader".to_string()]);
 

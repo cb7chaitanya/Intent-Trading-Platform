@@ -87,6 +87,23 @@ impl RbacService {
         Ok(perms)
     }
 
+    /// Get all permissions as "resource:action" strings for JWT claims.
+    pub async fn get_user_permission_strings(&self, user_id: Uuid) -> Result<Vec<String>, RbacError> {
+        let perms = self.get_user_permissions(user_id).await?;
+        let mut result: Vec<String> = perms
+            .iter()
+            .map(|p| format!("{}:{}", p.resource, p.action))
+            .collect();
+
+        // Also include role names for backward compat
+        let roles = self.get_user_role_names(user_id).await?;
+        result.extend(roles);
+
+        result.sort();
+        result.dedup();
+        Ok(result)
+    }
+
     /// Check if a user has a specific role.
     pub async fn has_role(&self, user_id: Uuid, role_name: &str) -> Result<bool, RbacError> {
         let count = sqlx::query_scalar::<_, i64>(

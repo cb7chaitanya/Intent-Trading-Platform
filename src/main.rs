@@ -164,7 +164,6 @@ async fn main() {
         Arc::clone(&storage),
         intent_bus,
         Arc::clone(&stream_bus),
-        Arc::clone(&balance_service),
         Arc::clone(&risk_engine),
     )));
     let bid_service = Arc::new(Mutex::new(BidService::new(

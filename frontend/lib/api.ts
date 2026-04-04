@@ -90,6 +90,11 @@ export const getTrades = (marketId: string, limit = 100) =>
     .get(`/market-data/trades/${marketId}`, { params: { limit } })
     .then((r) => r.data);
 
+export const getTradeHistory = (marketId: string, limit = 50, offset = 0) =>
+  api
+    .get(`/market-data/trades/${marketId}`, { params: { limit, offset } })
+    .then((r) => r.data);
+
 // Candles
 export const getCandles = (marketId: string, interval = "1m") =>
   api

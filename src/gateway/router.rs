@@ -5,7 +5,7 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use super::auth::validate_api_key;
+use super::auth::validate_auth;
 use super::metrics_middleware::MetricsLayer;
 use super::proxy::{proxy_handler, ProxyState};
 use super::rate_limit::{RateLimitLayer, RateLimiter};
@@ -43,14 +43,20 @@ pub fn build_router(config: GatewayConfig) -> Router {
         .route("/market-data/{*rest}", any(proxy_handler))
         .route("/ledger/{*rest}", any(proxy_handler))
         .route("/settlement/{*rest}", any(proxy_handler))
-        .with_state(proxy_state)
-        .layer(middleware::from_fn(validate_api_key))
+        .with_state(proxy_state.clone())
+        .layer(middleware::from_fn(validate_auth))
         .layer(RateLimitLayer::new(rate_limiter));
+
+    // Public routes (no auth required)
+    let public_routes = Router::new()
+        .route("/auth/{*rest}", any(proxy_handler))
+        .with_state(proxy_state);
 
     let health = Router::new().route("/health", any(|| async { "ok" }));
 
     Router::new()
         .merge(health)
+        .merge(public_routes)
         .merge(crate::metrics::router())
         .merge(service_routes)
         .layer(MetricsLayer)

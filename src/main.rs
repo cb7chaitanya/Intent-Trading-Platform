@@ -210,6 +210,7 @@ async fn main() {
         Arc::clone(&storage),
         bid_bus,
         Arc::clone(&stream_bus),
+        Arc::clone(&risk_engine),
     )));
 
     // Engines

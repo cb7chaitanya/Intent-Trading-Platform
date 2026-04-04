@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::db::redis::{Event, EventBus, INTENT_MATCHED};
 use crate::db::storage::Storage;
+use crate::metrics::counters;
 use crate::models::execution::{Execution, ExecutionStatus};
 use crate::models::intent::IntentStatus;
 
@@ -111,6 +112,9 @@ async fn execute_intent(
         .await
         .publish(&Event::ExecutionCompleted(execution))
         .await?;
+
+    counters::TRADES_TOTAL.inc();
+    counters::TRADES_PER_SECOND.inc();
 
     Ok(())
 }

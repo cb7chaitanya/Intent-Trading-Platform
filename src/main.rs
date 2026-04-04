@@ -14,6 +14,7 @@ mod markets;
 mod metrics;
 mod models;
 mod oracle;
+mod rbac;
 mod risk;
 mod services;
 mod settlement;
@@ -121,6 +122,9 @@ async fn main() {
     // Solver reputation service
     let solver_repo = SolverRepository::new(pg_pool.clone());
     let solver_service = Arc::new(SolverReputationService::new(solver_repo));
+
+    // RBAC service
+    let rbac_service = Arc::new(rbac::service::RbacService::new(pg_pool.clone()));
 
     // Settlement engine
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
@@ -297,6 +301,11 @@ async fn main() {
         bid_service,
     };
 
+    // Admin routes (JWT + admin role required)
+    let admin_routes = rbac::router(Arc::clone(&rbac_service))
+        .layer(axum::middleware::from_fn(rbac::middleware::require_role("admin")))
+        .layer(axum::middleware::from_fn(auth::middleware::require_auth));
+
     // Protected routes (JWT required, idempotency-checked)
     let protected = api::router(app_state)
         .merge(accounts::router(account_service))
@@ -313,7 +322,7 @@ async fn main() {
     };
 
     // Public routes (no JWT)
-    let public = auth::public_router(Arc::clone(&user_service))
+    let public = auth::public_router(Arc::clone(&user_service), Arc::clone(&rbac_service))
         .merge(health::router(health_state))
         .merge(users::router(user_service))
         .merge(markets::router(market_service))
@@ -324,7 +333,7 @@ async fn main() {
         .merge(metrics::router())
         .merge(oracle::router(oracle_service));
 
-    let app = protected.merge(public);
+    let app = admin_routes.merge(protected).merge(public);
 
     // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(&cfg.server_addr)

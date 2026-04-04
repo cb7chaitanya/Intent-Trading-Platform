@@ -3,6 +3,7 @@ mod api;
 mod api_keys;
 mod auth;
 mod balances;
+mod cache;
 mod config;
 mod db;
 mod ledger;
@@ -100,6 +101,13 @@ async fn main() {
         .expect("Failed to run database migrations");
     tracing::info!("Migrations complete");
 
+    // Redis cache service
+    let cache_service = Arc::new(
+        cache::CacheService::new(&cfg.redis_url)
+            .await
+            .expect("Failed to connect Redis for cache"),
+    );
+
     // Account service
     let account_repo = AccountRepository::new(pg_pool.clone());
     let account_service = Arc::new(AccountService::new(account_repo));
@@ -110,11 +118,16 @@ async fn main() {
 
     // Balance service
     let balance_repo = BalanceRepository::new(pg_pool.clone());
-    let balance_service = Arc::new(BalanceService::new(balance_repo, Arc::clone(&ledger_service)));
+    let balance_service = Arc::new(
+        BalanceService::new(balance_repo, Arc::clone(&ledger_service))
+            .with_cache(Arc::clone(&cache_service)),
+    );
 
     // Market service
     let market_repo = MarketRepository::new(pg_pool.clone());
-    let market_service = Arc::new(MarketService::new(market_repo));
+    let market_service = Arc::new(
+        MarketService::new(market_repo).with_cache(Arc::clone(&cache_service)),
+    );
 
     // Market data service
     let market_data_repo = MarketDataRepository::new(pg_pool.clone());
@@ -122,7 +135,9 @@ async fn main() {
 
     // Solver reputation service
     let solver_repo = SolverRepository::new(pg_pool.clone());
-    let solver_service = Arc::new(SolverReputationService::new(solver_repo));
+    let solver_service = Arc::new(
+        SolverReputationService::new(solver_repo).with_cache(Arc::clone(&cache_service)),
+    );
 
     // RBAC service
     let rbac_service = Arc::new(rbac::service::RbacService::new(pg_pool.clone()));

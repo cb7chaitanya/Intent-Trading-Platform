@@ -1,0 +1,19 @@
+database_url = "postgres://postgres:postgres@127.0.0.1:5432/intent_trading"
+redis_url = "redis://127.0.0.1:6379"
+server_addr = "0.0.0.0:3000"
+gateway_addr = "0.0.0.0:4000"
+upstream_url = "http://127.0.0.1:3000"
+jwt_secret = "change-me-in-production"
+
+auction_duration_secs = 10
+execution_duration_secs = 3
+fee_rate = 0.001
+rate_limit_per_minute = 120
+rate_limit_window_secs = 60
+daily_volume_limit = 10000000
+max_price_deviation = 0.20
+max_intents_per_minute = 30
+
+log_level = "info"
+environment = "dev"
+pg_max_connections = 5

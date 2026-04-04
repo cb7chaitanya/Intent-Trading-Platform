@@ -1,0 +1,134 @@
+services:
+  # --------------- Infrastructure ---------------
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: intent_trading
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # --------------- Backend Services ---------------
+  intent-trading:
+    build:
+      context: .
+      target: intent-trading
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/intent_trading
+      REDIS_URL: redis://redis:6379
+      SERVER_ADDR: 0.0.0.0:3000
+      JWT_SECRET: docker-dev-secret-change-in-prod
+      LOG_LEVEL: info
+      ENVIRONMENT: docker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  api-gateway:
+    build:
+      context: .
+      target: api-gateway
+    ports:
+      - "4000:4000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      GATEWAY_ADDR: 0.0.0.0:4000
+      UPSTREAM_URL: http://intent-trading:3000
+      JWT_SECRET: docker-dev-secret-change-in-prod
+      LOG_LEVEL: info
+      ENVIRONMENT: docker
+    depends_on:
+      intent-trading:
+        condition: service_healthy
+
+  solver-bot:
+    build:
+      context: .
+      target: solver-bot
+    environment:
+      SERVER_URL: http://intent-trading:3000
+      WS_URL: ws://intent-trading:3000/ws/feed
+    depends_on:
+      intent-trading:
+        condition: service_healthy
+    restart: on-failure
+
+  # --------------- Frontend ---------------
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3001:3001"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NEXT_PUBLIC_WS_URL: ws://localhost:3000/ws/feed
+    depends_on:
+      - api-gateway
+
+  # --------------- Monitoring ---------------
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    depends_on:
+      - intent-trading
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3002:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/dashboard.json
+    volumes:
+      - ./infra/grafana/dashboard.json:/var/lib/grafana/dashboards/dashboard.json
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  # --------------- Load Testing (on-demand) ---------------
+  load-test:
+    build:
+      context: .
+      target: load-test
+    environment:
+      BASE_URL: http://intent-trading:3000
+      WS_URL: ws://intent-trading:3000/ws/feed
+    depends_on:
+      intent-trading:
+        condition: service_healthy
+    profiles:
+      - testing
+
+volumes:
+  pgdata:

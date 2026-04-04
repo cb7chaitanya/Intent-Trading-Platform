@@ -5,6 +5,7 @@ mod auth;
 mod balances;
 mod cache;
 mod config;
+mod csrf;
 mod db;
 mod ledger;
 mod engine;
@@ -396,7 +397,10 @@ async fn main() {
         .layer(axum::middleware::from_fn(rbac::middleware::require_role("admin")))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 
-    // Protected routes (JWT required, idempotency-checked)
+    // CSRF protection
+    let csrf_state = Arc::new(csrf::middleware::CsrfState::new());
+
+    // Protected routes (JWT + CSRF + idempotency)
     let protected = api::router(app_state)
         .merge(accounts::router(account_service))
         .merge(balances::router(balance_service))
@@ -404,6 +408,7 @@ async fn main() {
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
         .merge(twap::router(twap_service))
+        .layer(csrf::middleware::CsrfLayer::new(Arc::clone(&csrf_state)))
         .layer(idempotency::IdempotencyLayer::new(idempotency_pool))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 
@@ -423,7 +428,8 @@ async fn main() {
         .merge(ws_server.router())
         .merge(ws::router(ws_feed))
         .merge(metrics::router())
-        .merge(oracle::router(oracle_service));
+        .merge(oracle::router(oracle_service))
+        .merge(csrf::router(csrf_state));
 
     let app = admin_routes.merge(protected).merge(public);
 

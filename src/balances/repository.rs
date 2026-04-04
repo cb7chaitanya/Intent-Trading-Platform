@@ -2,6 +2,8 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::metrics::{counters, histograms};
+
 use super::model::{Asset, Balance};
 
 pub struct BalanceRepository {
@@ -18,6 +20,7 @@ impl BalanceRepository {
         account_id: Uuid,
         asset: &Asset,
     ) -> Result<Balance, sqlx::Error> {
+        let start = std::time::Instant::now();
         let existing = sqlx::query_as::<_, Balance>(
             "SELECT * FROM balances WHERE account_id = $1 AND asset = $2",
         )
@@ -25,6 +28,12 @@ impl BalanceRepository {
         .bind(asset)
         .fetch_optional(&self.pool)
         .await?;
+        histograms::DB_QUERY_DURATION
+            .with_label_values(&["balance_select"])
+            .observe(start.elapsed().as_secs_f64());
+        counters::DB_QUERIES_TOTAL
+            .with_label_values(&["balance_select"])
+            .inc();
 
         if let Some(balance) = existing {
             return Ok(balance);
@@ -39,6 +48,7 @@ impl BalanceRepository {
             updated_at: Utc::now(),
         };
 
+        let start = std::time::Instant::now();
         sqlx::query(
             "INSERT INTO balances (id, account_id, asset, available_balance, locked_balance, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6)",
@@ -51,11 +61,18 @@ impl BalanceRepository {
         .bind(balance.updated_at)
         .execute(&self.pool)
         .await?;
+        histograms::DB_QUERY_DURATION
+            .with_label_values(&["balance_insert"])
+            .observe(start.elapsed().as_secs_f64());
+        counters::DB_QUERIES_TOTAL
+            .with_label_values(&["balance_insert"])
+            .inc();
 
         Ok(balance)
     }
 
     pub async fn update(&self, balance: &Balance) -> Result<(), sqlx::Error> {
+        let start = std::time::Instant::now();
         sqlx::query(
             "UPDATE balances SET available_balance = $1, locked_balance = $2, updated_at = $3
              WHERE id = $4",
@@ -66,6 +83,12 @@ impl BalanceRepository {
         .bind(balance.id)
         .execute(&self.pool)
         .await?;
+        histograms::DB_QUERY_DURATION
+            .with_label_values(&["balance_update"])
+            .observe(start.elapsed().as_secs_f64());
+        counters::DB_QUERIES_TOTAL
+            .with_label_values(&["balance_update"])
+            .inc();
         Ok(())
     }
 
@@ -73,9 +96,17 @@ impl BalanceRepository {
         &self,
         account_id: Uuid,
     ) -> Result<Vec<Balance>, sqlx::Error> {
-        sqlx::query_as::<_, Balance>("SELECT * FROM balances WHERE account_id = $1")
+        let start = std::time::Instant::now();
+        let result = sqlx::query_as::<_, Balance>("SELECT * FROM balances WHERE account_id = $1")
             .bind(account_id)
             .fetch_all(&self.pool)
-            .await
+            .await;
+        histograms::DB_QUERY_DURATION
+            .with_label_values(&["balance_list"])
+            .observe(start.elapsed().as_secs_f64());
+        counters::DB_QUERIES_TOTAL
+            .with_label_values(&["balance_list"])
+            .inc();
+        result
     }
 }

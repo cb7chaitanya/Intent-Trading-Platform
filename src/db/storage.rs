@@ -15,6 +15,10 @@ impl Storage {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     // --- Intents ---
 
     pub async fn insert_intent(&self, intent: &Intent) -> Result<(), sqlx::Error> {

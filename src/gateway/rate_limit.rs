@@ -9,8 +9,13 @@ use futures_util::future::BoxFuture;
 use tokio::sync::Mutex;
 use tower::{Layer, Service};
 
-const WINDOW_SECS: u64 = 60;
-const MAX_REQUESTS: u64 = 120;
+fn window_secs() -> u64 {
+    crate::config::get().rate_limit_window_secs
+}
+
+fn max_requests() -> u64 {
+    crate::config::get().rate_limit_per_minute
+}
 
 #[derive(Clone)]
 pub struct RateLimiter {
@@ -40,15 +45,15 @@ impl RateLimiter {
         let mut counters = self.counters.lock().await;
         let entry = counters.entry(key.to_string()).or_insert((0, now));
 
-        if now.duration_since(entry.1).as_secs() >= WINDOW_SECS {
+        if now.duration_since(entry.1).as_secs() >= window_secs() {
             *entry = (0, now);
         }
         entry.0 += 1;
 
-        if entry.0 > MAX_REQUESTS {
+        if entry.0 > max_requests() {
             return Err(StatusCode::TOO_MANY_REQUESTS);
         }
-        Ok((MAX_REQUESTS - entry.0, WINDOW_SECS))
+        Ok((max_requests() - entry.0, window_secs()))
     }
 }
 
@@ -111,7 +116,7 @@ where
 
             let mut response = inner.call(req).await?;
             let headers = response.headers_mut();
-            let _ = headers.insert("x-ratelimit-limit", MAX_REQUESTS.into());
+            let _ = headers.insert("x-ratelimit-limit", max_requests().into());
             let _ = headers.insert("x-ratelimit-remaining", remaining.into());
             let _ = headers.insert("x-ratelimit-window", window.into());
 

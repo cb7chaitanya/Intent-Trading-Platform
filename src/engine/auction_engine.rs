@@ -11,18 +11,18 @@ use crate::models::bid::SolverBid;
 use crate::models::fill::Fill;
 use crate::models::intent::{Intent, IntentStatus};
 
-const AUCTION_DURATION_SECS: u64 = 10;
-
 pub struct AuctionEngine {
     storage: Arc<Storage>,
     event_bus: Arc<Mutex<EventBus>>,
+    auction_duration_secs: u64,
 }
 
 impl AuctionEngine {
-    pub fn new(storage: Arc<Storage>, event_bus: EventBus) -> Self {
+    pub fn new(storage: Arc<Storage>, event_bus: EventBus, auction_duration_secs: u64) -> Self {
         Self {
             storage,
             event_bus: Arc::new(Mutex::new(event_bus)),
+            auction_duration_secs,
         }
     }
 
@@ -39,7 +39,7 @@ impl AuctionEngine {
             let payload: String = match msg.get_payload() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("Failed to read message payload: {e}");
+                    tracing::warn!(error = %e, "Failed to read auction message payload");
                     continue;
                 }
             };
@@ -47,7 +47,7 @@ impl AuctionEngine {
             let event = match serde_json::from_str::<Event>(&payload) {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("Failed to deserialize event: {e}");
+                    tracing::warn!(error = %e, "Failed to deserialize auction event");
                     continue;
                 }
             };
@@ -55,9 +55,11 @@ impl AuctionEngine {
             if let Event::IntentCreated(intent) = event {
                 let storage = Arc::clone(&self.storage);
                 let event_bus = Arc::clone(&self.event_bus);
+                let duration = self.auction_duration_secs;
                 tokio::spawn(async move {
-                    if let Err(e) = run_auction(storage, event_bus, intent.id).await {
-                        eprintln!("Auction failed for intent {}: {e}", intent.id);
+                    tracing::info!(intent_id = %intent.id, "auction_started");
+                    if let Err(e) = run_auction(storage, event_bus, intent.id, duration).await {
+                        tracing::error!(intent_id = %intent.id, error = %e, "auction_failed");
                     }
                 });
             }
@@ -71,6 +73,7 @@ async fn run_auction(
     storage: Arc<Storage>,
     event_bus: Arc<Mutex<EventBus>>,
     intent_id: Uuid,
+    auction_duration_secs: u64,
 ) -> Result<(), redis::RedisError> {
     gauges::ACTIVE_AUCTIONS.inc();
     let auction_start = std::time::Instant::now();
@@ -87,7 +90,7 @@ async fn run_auction(
     }
 
     // Wait for bids
-    tokio::time::sleep(tokio::time::Duration::from_secs(AUCTION_DURATION_SECS)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(auction_duration_secs)).await;
 
     // Record bid count for this auction
     let bid_count = storage.get_bids(&intent_id).len() as i64;
@@ -111,12 +114,19 @@ async fn close_auction(
     intent_id: &Uuid,
 ) -> Result<(), redis::RedisError> {
     let Some(mut intent) = storage.get_intent(intent_id) else {
-        eprintln!("Intent {intent_id} not found during auction close");
+        tracing::warn!(intent_id = %intent_id, "Intent not found during auction close");
         return Ok(());
     };
 
     match select_best_bid(storage, intent_id) {
         Some(bid) => {
+            tracing::info!(
+                intent_id = %intent_id,
+                solver_id = %bid.solver_id,
+                amount_out = bid.amount_out,
+                "auction_matched"
+            );
+
             let fill = generate_fill(&intent, &bid);
             storage.insert_fill(fill);
 
@@ -134,6 +144,8 @@ async fn close_auction(
                 .await?;
         }
         None => {
+            tracing::warn!(intent_id = %intent_id, "auction_no_bids");
+
             intent.status = IntentStatus::Failed;
             storage.update_intent(intent.clone());
 

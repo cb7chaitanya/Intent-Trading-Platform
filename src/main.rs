@@ -1,6 +1,7 @@
 mod accounts;
 mod api;
 mod balances;
+mod config;
 mod db;
 mod ledger;
 mod engine;
@@ -47,21 +48,35 @@ use crate::users::service::UserService;
 use crate::ws::feed::WsFeed;
 use crate::ws::server::WsServer;
 
-const REDIS_URL: &str = "redis://127.0.0.1:6379";
-const DATABASE_URL: &str = "postgres://postgres:postgres@127.0.0.1:5432/intent_trading";
-const SERVER_ADDR: &str = "0.0.0.0:3000";
-
 #[tokio::main]
 async fn main() {
-    println!("Starting Intent-Based Trading Platform...");
+    let cfg = config::init();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| {
+                    format!(
+                        "intent_trading={lvl},tower_http=info,sqlx=warn",
+                        lvl = cfg.log_level
+                    )
+                    .into()
+                }),
+        )
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_file(false)
+        .init();
+
+    tracing::info!(environment = %cfg.environment, "Starting Intent-Based Trading Platform");
 
     // Initialize all Prometheus metrics
     metrics::init();
 
     // PostgreSQL connection pool
     let pg_pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(DATABASE_URL)
+        .max_connections(cfg.pg_max_connections)
+        .connect(&cfg.database_url)
         .await
         .expect("Failed to connect to PostgreSQL");
 
@@ -280,11 +295,11 @@ async fn main() {
     let storage = Arc::new(Storage::new());
 
     // Each component gets its own EventBus (separate Redis connections)
-    let intent_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for IntentService");
-    let bid_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for BidService");
-    let auction_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for AuctionEngine");
-    let execution_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for ExecutionEngine");
-    let ws_bus = EventBus::new(REDIS_URL).await.expect("Failed to connect Redis for WsServer");
+    let intent_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for IntentService");
+    let bid_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for BidService");
+    let auction_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for AuctionEngine");
+    let execution_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExecutionEngine");
+    let ws_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for WsServer");
 
     // Risk engine
     let risk_engine = Arc::new(RiskEngine::new(
@@ -294,7 +309,7 @@ async fn main() {
 
     // Redis Streams event bus
     let stream_bus = Arc::new(
-        StreamBus::new(REDIS_URL)
+        StreamBus::new(&cfg.redis_url)
             .await
             .expect("Failed to connect Redis for StreamBus"),
     );
@@ -321,8 +336,8 @@ async fn main() {
     )));
 
     // Engines
-    let auction_engine = AuctionEngine::new(Arc::clone(&storage), auction_bus);
-    let execution_engine = ExecutionEngine::new(Arc::clone(&storage), execution_bus);
+    let auction_engine = AuctionEngine::new(Arc::clone(&storage), auction_bus, cfg.auction_duration_secs);
+    let execution_engine = ExecutionEngine::new(Arc::clone(&storage), execution_bus, cfg.execution_duration_secs);
 
     // Spawn stream consumer that forwards events to WebSocket feed
     let stream_consumer_bus = Arc::clone(&stream_bus);
@@ -353,7 +368,7 @@ async fn main() {
             )
             .await
         {
-            eprintln!("Stream consumer error: {e}");
+            tracing::error!(error = %e, "Stream consumer error");
         }
     });
 
@@ -364,13 +379,13 @@ async fn main() {
     // Spawn background tasks
     tokio::spawn(async move {
         if let Err(e) = auction_engine.start().await {
-            eprintln!("AuctionEngine error: {e}");
+            tracing::error!(error = %e, "AuctionEngine error");
         }
     });
 
     tokio::spawn(async move {
         if let Err(e) = execution_engine.start().await {
-            eprintln!("ExecutionEngine error: {e}");
+            tracing::error!(error = %e, "ExecutionEngine error");
         }
     });
 
@@ -399,9 +414,9 @@ async fn main() {
         .merge(metrics::router());
 
     // Start server
-    let listener = tokio::net::TcpListener::bind(SERVER_ADDR)
+    let listener = tokio::net::TcpListener::bind(&cfg.server_addr)
         .await
         .expect("Failed to bind server address");
-    println!("Server listening on {SERVER_ADDR}");
+    tracing::info!(addr = %cfg.server_addr, "Server listening");
     axum::serve(listener, app).await.expect("Server error");
 }

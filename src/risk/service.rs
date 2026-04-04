@@ -6,15 +6,9 @@ use uuid::Uuid;
 
 use crate::balances::model::Asset;
 use crate::balances::service::BalanceService;
+use crate::config;
 use crate::markets::model::Market;
 use crate::markets::service::MarketService;
-
-/// Maximum price deviation from implied market price (20%).
-const MAX_PRICE_DEVIATION: f64 = 0.20;
-/// Daily volume limit per user (in base units).
-const DAILY_VOLUME_LIMIT: u64 = 10_000_000;
-/// Rate limit: max intents per user per minute.
-const MAX_INTENTS_PER_MINUTE: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub enum RiskRejection {
@@ -224,7 +218,7 @@ impl RiskEngine {
         let implied_price = amount_in as f64 / min_amount_out as f64;
 
         // Use tick_size as a baseline unit. If the implied price is more than
-        // MAX_PRICE_DEVIATION away from 1 tick unit, flag it.
+        // config::get().max_price_deviation away from 1 tick unit, flag it.
         // This is a simplified check — in production you'd compare against
         // the last traded price or an oracle.
         if market.tick_size > 0 {
@@ -238,10 +232,10 @@ impl RiskEngine {
                     (tick_price - implied_price) / tick_price
                 };
 
-                if ratio > MAX_PRICE_DEVIATION * 100.0 {
+                if ratio > config::get().max_price_deviation * 100.0 {
                     return Err(RiskRejection::PriceDeviationTooHigh {
                         deviation_pct: ratio * 100.0,
-                        max_pct: MAX_PRICE_DEVIATION * 100.0,
+                        max_pct: config::get().max_price_deviation * 100.0,
                     });
                 }
             }
@@ -262,18 +256,18 @@ impl RiskEngine {
 
         // Rate limit
         entry.prune_old_intents();
-        if entry.recent_intents.len() as u64 >= MAX_INTENTS_PER_MINUTE {
+        if entry.recent_intents.len() as u64 >= config::get().max_intents_per_minute {
             return Err(RiskRejection::RateLimitExceeded {
-                limit: MAX_INTENTS_PER_MINUTE,
+                limit: config::get().max_intents_per_minute,
             });
         }
 
         // Daily volume
         entry.reset_if_new_day();
-        if entry.daily_volume + amount > DAILY_VOLUME_LIMIT {
+        if entry.daily_volume + amount > config::get().daily_volume_limit {
             return Err(RiskRejection::DailyVolumeLimitExceeded {
                 used: entry.daily_volume,
-                limit: DAILY_VOLUME_LIMIT,
+                limit: config::get().daily_volume_limit,
             });
         }
 

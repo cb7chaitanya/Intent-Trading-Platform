@@ -20,6 +20,7 @@ mod oracle;
 mod rbac;
 mod risk;
 mod services;
+mod signing;
 mod settlement;
 mod shutdown;
 mod solver_reputation;
@@ -406,6 +407,15 @@ async fn main() {
         workers::stop_order_monitor::run(stop_pool, stop_oracle, stop_event_bus, token).await;
     }));
 
+    // Internal request signature verification (only enforce in production)
+    let signature_layer = if cfg.environment == "production" || cfg.environment == "docker" {
+        Some(
+            signing::VerifySignatureLayer::new(&cfg.internal_signing_secret, &cfg.redis_url).await,
+        )
+    } else {
+        None
+    };
+
     // Build combined router
     let app_state = AppState {
         intent_service,
@@ -451,7 +461,12 @@ async fn main() {
         .merge(oracle::router(oracle_service))
         .merge(csrf::router(csrf_state));
 
-    let app = admin_routes.merge(protected).merge(public);
+    let mut app = admin_routes.merge(protected).merge(public);
+
+    // Apply signature verification in production (gateway signs, platform verifies)
+    if let Some(layer) = signature_layer {
+        app = app.layer(layer);
+    }
 
     // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(&cfg.server_addr)

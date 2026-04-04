@@ -428,7 +428,7 @@ async fn main() {
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 
     // CSRF protection
-    let csrf_state = Arc::new(csrf::middleware::CsrfState::new());
+    let csrf_state = Arc::new(csrf::middleware::CsrfState::new(&cfg.redis_url).await);
 
     // Protected routes (JWT + CSRF + idempotency)
     let protected = api::router(app_state)

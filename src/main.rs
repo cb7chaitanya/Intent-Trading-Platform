@@ -7,6 +7,7 @@ mod db;
 mod ledger;
 mod engine;
 mod fees;
+mod health;
 mod market_data;
 mod markets;
 mod metrics;
@@ -121,6 +122,7 @@ async fn main() {
     let user_service = Arc::new(UserService::new(user_repo, Arc::clone(&account_service)));
 
     // Postgres-backed storage for intents, bids, fills, executions
+    let storage_pool = pg_pool.clone();
     let storage = Arc::new(Storage::new(pg_pool));
 
     // Each component gets its own EventBus (separate Redis connections)
@@ -237,8 +239,15 @@ async fn main() {
         .merge(settlement::router(settlement_engine))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 
+    // Health check routes
+    let health_state = health::HealthState {
+        pg_pool: storage_pool,
+        redis_url: cfg.redis_url.clone(),
+    };
+
     // Public routes (no JWT)
     let public = auth::public_router(Arc::clone(&user_service))
+        .merge(health::router(health_state))
         .merge(users::router(user_service))
         .merge(markets::router(market_service))
         .merge(market_data::router(market_data_service))

@@ -52,6 +52,9 @@ pub struct Settings {
 
     #[serde(default = "default_pg_max_connections")]
     pub pg_max_connections: u32,
+
+    #[serde(default = "default_partition_retention_months")]
+    pub partition_retention_months: i32,
 }
 
 fn default_database_url() -> String {
@@ -104,4 +107,7 @@ fn default_environment() -> String {
 }
 fn default_pg_max_connections() -> u32 {
     5
+}
+fn default_partition_retention_months() -> i32 {
+    6
 }

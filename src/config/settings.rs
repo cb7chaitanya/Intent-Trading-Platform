@@ -55,6 +55,9 @@ pub struct Settings {
 
     #[serde(default = "default_partition_retention_months")]
     pub partition_retention_months: i32,
+
+    #[serde(default = "default_internal_signing_secret")]
+    pub internal_signing_secret: String,
 }
 
 fn default_database_url() -> String {
@@ -110,4 +113,7 @@ fn default_pg_max_connections() -> u32 {
 }
 fn default_partition_retention_months() -> i32 {
     6
+}
+fn default_internal_signing_secret() -> String {
+    "change-me-internal-signing-secret".to_string()
 }

@@ -51,6 +51,10 @@ sha2 = "0.10"
 hex = "0.4"
 hmac = "0.12"
 
+[dev-dependencies]
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
+
 [features]
 integration = []
 e2e = []

@@ -5,7 +5,7 @@ pub mod orderbook;
 use std::sync::Arc;
 
 use axum::middleware;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use tokio::sync::Mutex;
 
@@ -23,6 +23,7 @@ pub fn router(state: AppState) -> Router {
     // Intent write routes
     let intent_write = Router::new()
         .route("/intents", post(intents::create_intent))
+        .route("/intents/{id}/amend", put(intents::amend_intent))
         .route_layer(middleware::from_fn(require_perm("intent:create")));
 
     // Intent read routes

@@ -6,6 +6,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use super::auth::validate_api_key;
+use super::metrics_middleware::MetricsLayer;
 use super::proxy::{proxy_handler, ProxyState};
 use super::rate_limit::{RateLimitLayer, RateLimiter};
 
@@ -50,10 +51,9 @@ pub fn build_router(config: GatewayConfig) -> Router {
 
     Router::new()
         .merge(health)
+        .merge(crate::metrics::router())
         .merge(service_routes)
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CorsLayer::permissive()),
-        )
+        .layer(MetricsLayer)
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
 }

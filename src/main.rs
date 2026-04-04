@@ -1,5 +1,6 @@
 mod accounts;
 mod api;
+mod auth;
 mod balances;
 mod config;
 mod db;
@@ -228,18 +229,25 @@ async fn main() {
         bid_service,
     };
 
-    let app = api::router(app_state)
-        .merge(ws_server.router())
-        .merge(users::router(user_service))
+    // Protected routes (JWT required)
+    let protected = api::router(app_state)
         .merge(accounts::router(account_service))
         .merge(balances::router(balance_service))
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
+        .layer(axum::middleware::from_fn(auth::middleware::require_auth));
+
+    // Public routes (no JWT)
+    let public = auth::public_router(Arc::clone(&user_service))
+        .merge(users::router(user_service))
         .merge(markets::router(market_service))
         .merge(market_data::router(market_data_service))
-        .merge(ws::router(ws_feed))
         .merge(solver_reputation::router(solver_service))
+        .merge(ws_server.router())
+        .merge(ws::router(ws_feed))
         .merge(metrics::router());
+
+    let app = protected.merge(public);
 
     // Start server
     let listener = tokio::net::TcpListener::bind(&cfg.server_addr)

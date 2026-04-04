@@ -52,3 +52,4 @@ hex = "0.4"
 
 [features]
 integration = []
+e2e = []

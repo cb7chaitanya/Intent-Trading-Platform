@@ -64,21 +64,30 @@ use crate::ws::server::WsServer;
 async fn main() {
     let cfg = config::init();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    format!(
-                        "intent_trading={lvl},tower_http=info,sqlx=warn",
-                        lvl = cfg.log_level
-                    )
-                    .into()
-                }),
-        )
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_file(false)
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            format!("intent_trading={lvl},tower_http=info,sqlx=warn", lvl = cfg.log_level).into()
+        });
+
+    let use_json = std::env::var("LOG_FORMAT").unwrap_or_default() == "json"
+        || cfg.environment == "docker"
+        || cfg.environment == "production";
+
+    if use_json {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .json()
+            .with_target(true)
+            .with_current_span(true)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_file(false)
+            .init();
+    }
 
     tracing::info!(environment = %cfg.environment, "Starting Intent-Based Trading Platform");
 

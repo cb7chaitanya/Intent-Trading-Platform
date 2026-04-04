@@ -31,7 +31,7 @@ impl BidService {
         fee: u64,
     ) -> Result<SolverBid, redis::RedisError> {
         let bid = SolverBid::new(intent_id, solver_id, amount_out, fee);
-        self.storage.insert_bid(bid.clone());
+        let _ = self.storage.insert_bid(&bid).await;
         self.event_bus
             .publish(&Event::BidSubmitted(bid.clone()))
             .await?;
@@ -52,12 +52,12 @@ impl BidService {
         Ok(bid)
     }
 
-    pub fn get_bids(&self, intent_id: &Uuid) -> Vec<SolverBid> {
-        self.storage.get_bids(intent_id)
+    pub async fn get_bids(&self, intent_id: &Uuid) -> Vec<SolverBid> {
+        self.storage.get_bids(intent_id).await
     }
 
-    pub fn get_best_bid(&self, intent_id: &Uuid) -> Option<SolverBid> {
-        let bids = self.storage.get_bids(intent_id);
+    pub async fn get_best_bid(&self, intent_id: &Uuid) -> Option<SolverBid> {
+        let bids = self.storage.get_bids(intent_id).await;
         bids.into_iter().max_by(|a, b| {
             let net_a = a.amount_out.saturating_sub(a.fee);
             let net_b = b.amount_out.saturating_sub(b.fee);
@@ -65,8 +65,8 @@ impl BidService {
         })
     }
 
-    pub fn build_orderbook(&self, intent_id: &Uuid) -> Vec<SolverBid> {
-        let mut bids = self.storage.get_bids(intent_id);
+    pub async fn build_orderbook(&self, intent_id: &Uuid) -> Vec<SolverBid> {
+        let mut bids = self.storage.get_bids(intent_id).await;
         bids.sort_by(|a, b| {
             let net_a = a.amount_out.saturating_sub(a.fee);
             let net_b = b.amount_out.saturating_sub(b.fee);

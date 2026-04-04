@@ -9,7 +9,7 @@ use crate::db::redis::{Event, EventBus};
 use crate::db::storage::Storage;
 use crate::db::stream_bus::{StreamBus, STREAM_INTENT_CREATED};
 use crate::models::intent::{Intent, IntentStatus};
-use crate::risk::service::{IntentRiskParams, RiskEngine, RiskRejection};
+use crate::risk::service::{IntentRiskParams, RiskEngine};
 
 #[derive(Debug)]
 pub enum IntentError {
@@ -19,6 +19,7 @@ pub enum IntentError {
     RiskRejected(String),
     RedisError(redis::RedisError),
     BalanceError(String),
+    StorageError(String),
 }
 
 impl std::fmt::Display for IntentError {
@@ -30,6 +31,7 @@ impl std::fmt::Display for IntentError {
             IntentError::RedisError(e) => write!(f, "Redis error: {e}"),
             IntentError::RiskRejected(e) => write!(f, "Risk rejected: {e}"),
             IntentError::BalanceError(e) => write!(f, "Balance error: {e}"),
+            IntentError::StorageError(e) => write!(f, "Storage error: {e}"),
         }
     }
 }
@@ -75,7 +77,6 @@ impl IntentService {
         min_amount_out: u64,
         deadline: i64,
     ) -> Result<Intent, IntentError> {
-        // Run all risk checks before accepting
         let risk_params = IntentRiskParams {
             user_id: user_id.clone(),
             account_id,
@@ -89,7 +90,6 @@ impl IntentService {
             .await
             .map_err(|e| IntentError::RiskRejected(e.to_string()))?;
 
-        // Lock funds
         let asset = parse_asset(&token_in)?;
         self.balance_service
             .lock_balance(account_id, asset, amount_in as i64)
@@ -99,7 +99,6 @@ impl IntentService {
                 other => IntentError::BalanceError(other.to_string()),
             })?;
 
-        // Record accepted intent for rate/volume tracking
         self.risk_engine
             .record_accepted_intent(&user_id, amount_in)
             .await;
@@ -107,12 +106,15 @@ impl IntentService {
         let intent = Intent::new(
             user_id, token_in, token_out, amount_in, min_amount_out, deadline,
         );
-        self.storage.insert_intent(intent.clone());
+        self.storage
+            .insert_intent(&intent)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+
         self.event_bus
             .publish(&Event::IntentCreated(intent.clone()))
             .await?;
 
-        // Also publish to Redis Streams for durable delivery
         let _ = self
             .stream_bus
             .publish(STREAM_INTENT_CREATED, &intent)
@@ -132,22 +134,22 @@ impl IntentService {
         Ok(intent)
     }
 
-    pub fn get_intent(&self, intent_id: &Uuid) -> Option<Intent> {
-        self.storage.get_intent(intent_id)
+    pub async fn get_intent(&self, intent_id: &Uuid) -> Option<Intent> {
+        self.storage.get_intent(intent_id).await
     }
 
-    pub fn list_intents(&self) -> Vec<Intent> {
-        self.storage.list_intents()
+    pub async fn list_intents(&self) -> Vec<Intent> {
+        self.storage.list_intents().await
     }
 
-    pub fn update_intent_status(
+    pub async fn update_intent_status(
         &self,
         intent_id: &Uuid,
         status: IntentStatus,
     ) -> Option<Intent> {
-        let mut intent = self.storage.get_intent(intent_id)?;
+        let mut intent = self.storage.get_intent(intent_id).await?;
         intent.status = status;
-        self.storage.update_intent(intent.clone());
+        let _ = self.storage.update_intent(&intent).await;
         Some(intent)
     }
 
@@ -156,19 +158,18 @@ impl IntentService {
         intent_id: &Uuid,
         account_id: Uuid,
     ) -> Result<Option<Intent>, IntentError> {
-        let Some(mut intent) = self.storage.get_intent(intent_id) else {
+        let Some(mut intent) = self.storage.get_intent(intent_id).await else {
             return Ok(None);
         };
 
-        // Unlock funds
         let asset = parse_asset(&intent.token_in)?;
         self.balance_service
-            .unlock_balance(account_id, asset, intent.amount_in as i64)
+            .unlock_balance(account_id, asset, intent.amount_in)
             .await
             .map_err(|e| IntentError::BalanceError(e.to_string()))?;
 
         intent.status = IntentStatus::Cancelled;
-        self.storage.update_intent(intent.clone());
+        let _ = self.storage.update_intent(&intent).await;
         self.event_bus
             .publish(&Event::IntentCancelled(intent.clone()))
             .await?;
@@ -180,19 +181,18 @@ impl IntentService {
         intent_id: &Uuid,
         account_id: Uuid,
     ) -> Result<Option<Intent>, IntentError> {
-        let Some(mut intent) = self.storage.get_intent(intent_id) else {
+        let Some(mut intent) = self.storage.get_intent(intent_id).await else {
             return Ok(None);
         };
 
-        // Unlock funds
         let asset = parse_asset(&intent.token_in)?;
         self.balance_service
-            .unlock_balance(account_id, asset, intent.amount_in as i64)
+            .unlock_balance(account_id, asset, intent.amount_in)
             .await
             .map_err(|e| IntentError::BalanceError(e.to_string()))?;
 
         intent.status = IntentStatus::Failed;
-        self.storage.update_intent(intent.clone());
+        let _ = self.storage.update_intent(&intent).await;
         self.event_bus
             .publish(&Event::IntentFailed(intent.clone()))
             .await?;
@@ -203,11 +203,11 @@ impl IntentService {
         &mut self,
         intent_id: &Uuid,
     ) -> Result<Option<Intent>, IntentError> {
-        let Some(mut intent) = self.storage.get_intent(intent_id) else {
+        let Some(mut intent) = self.storage.get_intent(intent_id).await else {
             return Ok(None);
         };
         intent.status = IntentStatus::Bidding;
-        self.storage.update_intent(intent.clone());
+        let _ = self.storage.update_intent(&intent).await;
         self.event_bus
             .publish(&Event::IntentBidding(intent.clone()))
             .await?;

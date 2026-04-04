@@ -67,11 +67,12 @@ pub async fn run(
     }
 }
 
-/// Event published when an intent's settlement is fully complete.
+/// Event published when an intent's settlement status changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentSettledEvent {
     pub intent_id: Uuid,
     pub settled_qty: i64,
+    pub status: String,
 }
 
 async fn process_event(
@@ -191,11 +192,15 @@ async fn update_intent_status(settlement: &SettlementEngine, stream_bus: &Arc<St
         "intent_status_auto_updated"
     );
 
-    // Emit intent.settled event when fully completed
-    if new_status == IntentStatus::Completed {
-        let settled_event = IntentSettledEvent { intent_id, settled_qty };
+    // Emit intent.settled event on status change
+    if new_status == IntentStatus::Completed || new_status == IntentStatus::PartiallyFilled {
+        let settled_event = IntentSettledEvent {
+            intent_id,
+            settled_qty,
+            status: format!("{new_status:?}"),
+        };
         let _ = stream_bus.publish(STREAM_INTENT_SETTLED, &settled_event).await;
-        tracing::info!(intent_id = %intent_id, "intent_settled_event_published");
+        tracing::info!(intent_id = %intent_id, status = ?new_status, "intent_settled_event_published");
     }
 }
 

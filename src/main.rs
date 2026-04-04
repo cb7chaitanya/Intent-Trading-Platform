@@ -170,6 +170,7 @@ async fn main() {
     let execution_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExecutionEngine");
     let ws_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for WsServer");
     let expiry_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExpiryWorker");
+    let stop_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for StopOrderMonitor");
 
     // Oracle service
     let oracle_service = Arc::new(oracle::service::OracleService::new(
@@ -384,6 +385,15 @@ async fn main() {
     let token = shutdown.token();
     bg_tasks.push(tokio::spawn(async move {
         workers::partition_archival::run(archival_pool, token).await;
+    }));
+
+    // Background task: stop order monitor
+    let stop_pool = health_pool.clone();
+    let stop_oracle = Arc::clone(&oracle_service);
+    let stop_event_bus = Arc::new(Mutex::new(stop_bus));
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        workers::stop_order_monitor::run(stop_pool, stop_oracle, stop_event_bus, token).await;
     }));
 
     // Build combined router

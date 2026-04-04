@@ -35,6 +35,7 @@ use crate::solver_reputation::repository::SolverRepository;
 use crate::solver_reputation::service::SolverReputationService;
 use crate::api::AppState;
 use crate::db::redis::EventBus;
+use crate::db::stream_bus::StreamBus;
 use crate::db::storage::Storage;
 use crate::engine::auction_engine::AuctionEngine;
 use crate::engine::execution_engine::ExecutionEngine;
@@ -287,21 +288,70 @@ async fn main() {
         Arc::clone(&market_service),
     ));
 
+    // Redis Streams event bus
+    let stream_bus = Arc::new(
+        StreamBus::new(REDIS_URL)
+            .await
+            .expect("Failed to connect Redis for StreamBus"),
+    );
+
+    for stream in crate::db::stream_bus::ALL_STREAMS {
+        stream_bus
+            .ensure_group(stream, "platform")
+            .await
+            .expect("Failed to create consumer group");
+    }
+
     // Services
     let intent_service = Arc::new(Mutex::new(IntentService::new(
         Arc::clone(&storage),
         intent_bus,
+        Arc::clone(&stream_bus),
         Arc::clone(&balance_service),
         Arc::clone(&risk_engine),
     )));
-    let bid_service = Arc::new(Mutex::new(BidService::new(Arc::clone(&storage), bid_bus)));
+    let bid_service = Arc::new(Mutex::new(BidService::new(
+        Arc::clone(&storage),
+        bid_bus,
+        Arc::clone(&stream_bus),
+    )));
 
     // Engines
     let auction_engine = AuctionEngine::new(Arc::clone(&storage), auction_bus);
     let execution_engine = ExecutionEngine::new(Arc::clone(&storage), execution_bus);
 
-    // WebSocket feed (per-market subscriptions)
-    let ws_feed = Arc::new(WsFeed::new());
+    // Spawn stream consumer that forwards events to WebSocket feed
+    let stream_consumer_bus = Arc::clone(&stream_bus);
+    let stream_consumer_feed = {
+        // ws_feed created below, need forward ref
+        Arc::new(WsFeed::new())
+    };
+    let ws_feed = Arc::clone(&stream_consumer_feed);
+
+    tokio::spawn(async move {
+        if let Err(e) = stream_consumer_bus
+            .subscribe(
+                crate::db::stream_bus::ALL_STREAMS,
+                "platform",
+                "ws-forwarder",
+                |event| {
+                    let feed = Arc::clone(&stream_consumer_feed);
+                    async move {
+                        let msg = serde_json::json!({
+                            "event": event.event_type,
+                            "data": event.payload,
+                            "event_id": event.event_id,
+                            "timestamp": event.timestamp,
+                        });
+                        feed.broadcast_global(&msg.to_string());
+                    }
+                },
+            )
+            .await
+        {
+            eprintln!("Stream consumer error: {e}");
+        }
+    });
 
     // WebSocket server (global Redis relay on /ws)
     let ws_server = WsServer::new();

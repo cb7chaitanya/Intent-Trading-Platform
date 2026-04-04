@@ -1,5 +1,6 @@
 pub mod handler;
 pub mod jwt;
+pub mod key_rotation;
 pub mod middleware;
 
 use std::sync::Arc;

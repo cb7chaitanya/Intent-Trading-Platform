@@ -257,6 +257,14 @@ async fn main() {
         }
     }));
 
+    // Background task: settlement retry worker
+    let retry_pool = settlement_engine.pool().clone();
+    let retry_engine = Arc::clone(&settlement_engine);
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        settlement::retry::run_retry_worker(retry_pool, retry_engine, token).await;
+    }));
+
     // Build combined router
     let app_state = AppState {
         intent_service,

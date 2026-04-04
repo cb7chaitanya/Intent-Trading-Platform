@@ -7,20 +7,46 @@ use crate::db::storage::Storage;
 use crate::db::stream_bus::{StreamBus, STREAM_BID_SUBMITTED};
 use crate::metrics::counters;
 use crate::models::bid::SolverBid;
+use crate::risk::service::RiskEngine;
+
+#[derive(Debug)]
+pub enum BidError {
+    RedisError(redis::RedisError),
+    RiskRejected(String),
+    IntentNotFound,
+}
+
+impl std::fmt::Display for BidError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BidError::RedisError(e) => write!(f, "Redis error: {e}"),
+            BidError::RiskRejected(e) => write!(f, "Bid rejected: {e}"),
+            BidError::IntentNotFound => write!(f, "Intent not found"),
+        }
+    }
+}
+
+impl From<redis::RedisError> for BidError {
+    fn from(e: redis::RedisError) -> Self {
+        BidError::RedisError(e)
+    }
+}
 
 pub struct BidService {
     storage: Arc<Storage>,
     event_bus: EventBus,
     stream_bus: Arc<StreamBus>,
+    risk_engine: Arc<RiskEngine>,
 }
 
 impl BidService {
-    pub fn new(storage: Arc<Storage>, event_bus: EventBus, stream_bus: Arc<StreamBus>) -> Self {
-        Self {
-            storage,
-            event_bus,
-            stream_bus,
-        }
+    pub fn new(
+        storage: Arc<Storage>,
+        event_bus: EventBus,
+        stream_bus: Arc<StreamBus>,
+        risk_engine: Arc<RiskEngine>,
+    ) -> Self {
+        Self { storage, event_bus, stream_bus, risk_engine }
     }
 
     pub async fn submit_bid(
@@ -29,7 +55,23 @@ impl BidService {
         solver_id: String,
         amount_out: u64,
         fee: u64,
-    ) -> Result<SolverBid, redis::RedisError> {
+    ) -> Result<SolverBid, BidError> {
+        // Look up intent for risk validation context
+        let intent = self.storage.get_intent(&intent_id).await
+            .ok_or(BidError::IntentNotFound)?;
+
+        // Validate bid against oracle + cross-market
+        self.risk_engine
+            .validate_bid(
+                &intent.token_in,
+                &intent.token_out,
+                amount_out as i64,
+                fee as i64,
+                intent.amount_in,
+            )
+            .await
+            .map_err(|e| BidError::RiskRejected(e.to_string()))?;
+
         let bid = SolverBid::new(intent_id, solver_id, amount_out, fee);
         let _ = self.storage.insert_bid(&bid).await;
         self.event_bus

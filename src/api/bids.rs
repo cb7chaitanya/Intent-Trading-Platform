@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::models::bid::SolverBid;
+use crate::services::bid_service::BidError;
 
 #[derive(Deserialize)]
 pub struct SubmitBidRequest {
@@ -23,6 +24,10 @@ pub async fn submit_bid(
     let bid = svc
         .submit_bid(req.intent_id, req.solver_id, req.amount_out, req.fee)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| match e {
+            BidError::RiskRejected(_) => (StatusCode::FORBIDDEN, e.to_string()),
+            BidError::IntentNotFound => (StatusCode::NOT_FOUND, e.to_string()),
+            BidError::RedisError(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        })?;
     Ok((StatusCode::CREATED, Json(bid)))
 }

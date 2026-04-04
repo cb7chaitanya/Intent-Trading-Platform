@@ -17,6 +17,7 @@ pub enum IntentError {
     InsufficientBalance,
     InvalidAsset(String),
     IntentNotFound,
+    NotAmendable(String),
     RiskRejected(String),
     RedisError(redis::RedisError),
     BalanceError(String),
@@ -29,6 +30,7 @@ impl std::fmt::Display for IntentError {
             IntentError::InsufficientBalance => write!(f, "Insufficient balance"),
             IntentError::InvalidAsset(a) => write!(f, "Invalid asset: {a}"),
             IntentError::IntentNotFound => write!(f, "Intent not found"),
+            IntentError::NotAmendable(s) => write!(f, "Intent cannot be amended: {s}"),
             IntentError::RedisError(e) => write!(f, "Redis error: {e}"),
             IntentError::RiskRejected(e) => write!(f, "Risk rejected: {e}"),
             IntentError::BalanceError(e) => write!(f, "Balance error: {e}"),
@@ -315,6 +317,163 @@ impl IntentService {
             .publish(&Event::IntentBidding(intent.clone()))
             .await?;
         Ok(Some(intent))
+    }
+
+    /// Amend an intent's amount or price before it's matched.
+    /// Atomic: locks intent row, adjusts balance, records amendment, resets to Open.
+    pub async fn amend_intent(
+        &mut self,
+        intent_id: &Uuid,
+        account_id: Uuid,
+        new_amount_in: Option<u64>,
+        new_min_amount_out: Option<u64>,
+        new_limit_price: Option<i64>,
+    ) -> Result<Intent, IntentError> {
+        let pool = self.storage.pool();
+        let mut tx = pool.begin().await.map_err(|e| IntentError::StorageError(e.to_string()))?;
+
+        // Lock intent row
+        let intent = sqlx::query_as::<_, Intent>(
+            "SELECT * FROM intents WHERE id = $1 FOR UPDATE",
+        )
+        .bind(intent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| IntentError::StorageError(e.to_string()))?
+        .ok_or(IntentError::IntentNotFound)?;
+
+        // Only Open or Bidding intents can be amended
+        if intent.status != IntentStatus::Open && intent.status != IntentStatus::Bidding {
+            return Err(IntentError::NotAmendable(format!("status is {:?}", intent.status)));
+        }
+
+        let asset = parse_asset(&intent.token_in)?;
+        let old_amount = intent.amount_in;
+        let new_amount = new_amount_in.map(|a| a as i64).unwrap_or(old_amount);
+        let now = Utc::now();
+
+        // Get amendment count for numbering
+        let amendment_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM intent_amendments WHERE intent_id = $1",
+        )
+        .bind(intent_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| IntentError::StorageError(e.to_string()))? as i32;
+
+        let amendment_num = amendment_count + 1;
+
+        // Balance adjustment
+        let diff = new_amount - old_amount;
+        if diff > 0 {
+            // Need to lock more — check available balance
+            let available: i64 = sqlx::query_scalar(
+                "SELECT available_balance FROM balances WHERE account_id = $1 AND asset = $2 FOR UPDATE",
+            )
+            .bind(account_id)
+            .bind(&asset)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?
+            .unwrap_or(0);
+
+            if available < diff {
+                return Err(IntentError::InsufficientBalance);
+            }
+
+            sqlx::query(
+                "UPDATE balances SET available_balance = available_balance - $1,
+                     locked_balance = locked_balance + $1, updated_at = $2
+                 WHERE account_id = $3 AND asset = $4",
+            )
+            .bind(diff).bind(now).bind(account_id).bind(&asset)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+        } else if diff < 0 {
+            // Unlock excess
+            sqlx::query(
+                "UPDATE balances SET available_balance = available_balance + $1,
+                     locked_balance = locked_balance - $1, updated_at = $2
+                 WHERE account_id = $3 AND asset = $4",
+            )
+            .bind(-diff).bind(now).bind(account_id).bind(&asset)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+        }
+
+        // Record amendments
+        if new_amount != old_amount {
+            sqlx::query(
+                "INSERT INTO intent_amendments (intent_id, amendment_number, field_changed, old_value, new_value, amended_by)
+                 VALUES ($1, $2, 'amount_in', $3, $4, $5)",
+            )
+            .bind(intent_id).bind(amendment_num)
+            .bind(old_amount.to_string()).bind(new_amount.to_string()).bind(&intent.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+        }
+
+        let new_min_out = new_min_amount_out.map(|a| a as i64).unwrap_or(intent.min_amount_out);
+        if new_min_out != intent.min_amount_out {
+            sqlx::query(
+                "INSERT INTO intent_amendments (intent_id, amendment_number, field_changed, old_value, new_value, amended_by)
+                 VALUES ($1, $2, 'min_amount_out', $3, $4, $5)",
+            )
+            .bind(intent_id).bind(amendment_num)
+            .bind(intent.min_amount_out.to_string()).bind(new_min_out.to_string()).bind(&intent.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+        }
+
+        let final_limit_price = new_limit_price.or(intent.limit_price);
+        if new_limit_price.is_some() && new_limit_price != intent.limit_price {
+            sqlx::query(
+                "INSERT INTO intent_amendments (intent_id, amendment_number, field_changed, old_value, new_value, amended_by)
+                 VALUES ($1, $2, 'limit_price', $3, $4, $5)",
+            )
+            .bind(intent_id).bind(amendment_num)
+            .bind(intent.limit_price.unwrap_or(0).to_string())
+            .bind(new_limit_price.unwrap_or(0).to_string())
+            .bind(&intent.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| IntentError::StorageError(e.to_string()))?;
+        }
+
+        // Update intent and reset to Open (restarts auction)
+        sqlx::query(
+            "UPDATE intents SET amount_in = $1, min_amount_out = $2, limit_price = $3,
+                 status = 'open'
+             WHERE id = $4",
+        )
+        .bind(new_amount).bind(new_min_out).bind(final_limit_price).bind(intent_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| IntentError::StorageError(e.to_string()))?;
+
+        tx.commit().await.map_err(|e| IntentError::StorageError(e.to_string()))?;
+
+        // Fetch updated intent
+        let amended = self.storage.get_intent(intent_id).await.ok_or(IntentError::IntentNotFound)?;
+
+        // Publish event
+        self.event_bus
+            .publish(&Event::IntentAmended(amended.clone()))
+            .await?;
+
+        tracing::info!(
+            intent_id = %intent_id,
+            old_amount = old_amount,
+            new_amount = new_amount,
+            amendment = amendment_num,
+            "intent_amended"
+        );
+
+        Ok(amended)
     }
 }
 

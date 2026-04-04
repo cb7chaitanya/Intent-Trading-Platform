@@ -165,6 +165,28 @@ services:
     profiles:
       - testing
 
+  # --------------- Backup ---------------
+  pg-backup:
+    build:
+      context: ./infra/backup
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: intent_trading
+      S3_BUCKET: intentx-backups
+      S3_ENDPOINT: http://minio:9000
+      S3_PREFIX: daily
+      RETENTION_DAYS: "30"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - production
+
 volumes:
   pgdata:
   certbot-webroot:

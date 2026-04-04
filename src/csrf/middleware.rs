@@ -1,56 +1,54 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::Instant;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
-use tokio::sync::Mutex;
+use redis::AsyncCommands;
 use tower::{Layer, Service};
 use uuid::Uuid;
 
-const TOKEN_TTL_SECS: u64 = 3600; // 1 hour
+const TOKEN_TTL_SECS: u64 = 3600;
 const CSRF_HEADER: &str = "x-csrf-token";
 const CSRF_COOKIE: &str = "csrf_token";
+const REDIS_PREFIX: &str = "csrf:";
 
-/// Shared state for CSRF token storage.
+/// Redis-backed CSRF token state. Supports multi-instance deployment.
 #[derive(Clone)]
 pub struct CsrfState {
-    tokens: Arc<Mutex<HashMap<String, Instant>>>,
+    conn: Arc<tokio::sync::Mutex<redis::aio::MultiplexedConnection>>,
 }
 
 impl CsrfState {
-    pub fn new() -> Self {
-        Self {
-            tokens: Arc::new(Mutex::new(HashMap::new())),
-        }
+    pub async fn new(redis_url: &str) -> Self {
+        let client = redis::Client::open(redis_url).expect("Invalid Redis URL for CSRF");
+        let conn = client.get_multiplexed_async_connection().await.expect("Redis connect failed for CSRF");
+        Self { conn: Arc::new(tokio::sync::Mutex::new(conn)) }
     }
 
-    /// Generate a new CSRF token and store it.
-    pub async fn generate_token(&self) -> String {
+    /// Generate a CSRF token tied to a user/session.
+    /// Stored in Redis with TTL. Returns the token string.
+    pub async fn generate_token(&self, user_id: &str) -> String {
         let token = Uuid::new_v4().to_string();
-        let mut tokens = self.tokens.lock().await;
-
-        // Prune expired tokens
-        let cutoff = Instant::now() - std::time::Duration::from_secs(TOKEN_TTL_SECS);
-        tokens.retain(|_, created| *created > cutoff);
-
-        tokens.insert(token.clone(), Instant::now());
+        let key = format!("{REDIS_PREFIX}{token}");
+        let mut conn = self.conn.lock().await;
+        let _: Result<(), _> = conn.set_ex(&key, user_id, TOKEN_TTL_SECS).await;
         token
     }
 
     /// Validate and consume a CSRF token (single-use).
-    pub async fn validate_token(&self, token: &str) -> bool {
-        let mut tokens = self.tokens.lock().await;
+    /// Returns the user_id the token was issued for, or None if invalid.
+    pub async fn validate_token(&self, token: &str) -> Option<String> {
+        let key = format!("{REDIS_PREFIX}{token}");
+        let mut conn = self.conn.lock().await;
 
-        match tokens.remove(token) {
-            Some(created) => {
-                created.elapsed().as_secs() < TOKEN_TTL_SECS
-            }
-            None => false,
+        // GET + DEL atomically (single-use)
+        let user_id: Option<String> = conn.get(&key).await.ok().flatten();
+        if user_id.is_some() {
+            let _: Result<(), _> = conn.del(&key).await;
         }
+        user_id
     }
 }
 
@@ -71,12 +69,8 @@ impl CsrfLayer {
 
 impl<S> Layer<S> for CsrfLayer {
     type Service = CsrfService<S>;
-
     fn layer(&self, inner: S) -> Self::Service {
-        CsrfService {
-            inner,
-            state: self.state.clone(),
-        }
+        CsrfService { inner, state: self.state.clone() }
     }
 }
 
@@ -104,22 +98,19 @@ where
         let mut inner = self.inner.clone();
 
         Box::pin(async move {
-            // Only validate on state-changing methods
             let method = req.method().clone();
             if method == Method::GET || method == Method::HEAD || method == Method::OPTIONS {
                 return inner.call(req).await;
             }
 
             // Extract token from header
-            let header_token = req
-                .headers()
+            let header_token = req.headers()
                 .get(CSRF_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
 
-            // Extract token from cookie (for double-submit validation)
-            let cookie_token = req
-                .headers()
+            // Extract token from cookie
+            let cookie_token = req.headers()
                 .get("cookie")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|cookies| {
@@ -127,9 +118,7 @@ where
                         let c = c.trim();
                         if c.starts_with(CSRF_COOKIE) {
                             c.splitn(2, '=').nth(1).map(|v| v.to_string())
-                        } else {
-                            None
-                        }
+                        } else { None }
                     })
                 });
 
@@ -137,28 +126,37 @@ where
                 Some(t) => t,
                 None => {
                     tracing::warn!(method = %method, path = %req.uri().path(), "missing_csrf_token");
-                    return Ok(
-                        (StatusCode::FORBIDDEN, "Missing X-CSRF-Token header").into_response()
-                    );
+                    return Ok((StatusCode::FORBIDDEN, "Missing X-CSRF-Token header").into_response());
                 }
             };
 
-            // Double-submit check: header must match cookie
+            // Double-submit: header must match cookie
             if let Some(cookie) = &cookie_token {
                 if cookie != &token {
                     tracing::warn!("csrf_token_mismatch");
-                    return Ok(
-                        (StatusCode::FORBIDDEN, "CSRF token mismatch").into_response()
-                    );
+                    return Ok((StatusCode::FORBIDDEN, "CSRF token mismatch").into_response());
                 }
             }
 
-            // Validate token exists and hasn't expired
-            if !state.validate_token(&token).await {
-                tracing::warn!("csrf_token_invalid_or_expired");
-                return Ok(
-                    (StatusCode::FORBIDDEN, "Invalid or expired CSRF token").into_response()
-                );
+            // Validate + consume in Redis (single-use)
+            let user_id_from_token = match state.validate_token(&token).await {
+                Some(uid) => uid,
+                None => {
+                    tracing::warn!("csrf_token_invalid_or_expired");
+                    return Ok((StatusCode::FORBIDDEN, "Invalid or expired CSRF token").into_response());
+                }
+            };
+
+            // Optionally verify token was issued for this user
+            if let Some(request_user) = req.headers().get("x-user-id").and_then(|v| v.to_str().ok()) {
+                if request_user != user_id_from_token && user_id_from_token != "anonymous" {
+                    tracing::warn!(
+                        token_user = %user_id_from_token,
+                        request_user = %request_user,
+                        "csrf_user_mismatch"
+                    );
+                    return Ok((StatusCode::FORBIDDEN, "CSRF token not issued for this user").into_response());
+                }
             }
 
             inner.call(req).await

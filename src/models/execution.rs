@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -17,7 +18,7 @@ pub struct Execution {
     pub solver_id: String,
     pub tx_hash: String,
     pub status: ExecutionStatus,
-    pub created_at: i64,
+    pub created_at: DateTime<Utc>,
 }
 
 impl Execution {
@@ -32,7 +33,7 @@ impl Execution {
             solver_id,
             tx_hash,
             status: ExecutionStatus::Pending,
-            created_at: chrono::Utc::now().timestamp(),
+            created_at: Utc::now(),
         }
     }
 }

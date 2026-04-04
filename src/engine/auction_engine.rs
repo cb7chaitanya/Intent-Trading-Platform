@@ -9,7 +9,7 @@ use crate::db::storage::Storage;
 use crate::metrics::{counters, gauges, histograms};
 use crate::models::bid::SolverBid;
 use crate::models::fill::Fill;
-use crate::models::intent::{Intent, IntentStatus};
+use crate::models::intent::{Intent, IntentStatus, OrderType};
 
 pub struct AuctionEngine {
     storage: Arc<Storage>,
@@ -114,7 +114,11 @@ async fn close_auction(
         return Ok(());
     };
 
-    let bids = sort_bids_by_price(storage, intent_id).await;
+    let all_bids = sort_bids_by_price(storage, intent_id).await;
+
+    // For limit orders, filter bids to only those at or better than limit_price
+    let bids = filter_bids_for_order_type(&intent, all_bids);
+
     if bids.is_empty() {
         tracing::warn!(intent_id = %intent_id, "auction_no_bids");
         intent.status = IntentStatus::Failed;
@@ -183,6 +187,34 @@ async fn sort_bids_by_price(storage: &Storage, intent_id: &Uuid) -> Vec<SolverBi
     bids
 }
 
+/// Filter bids based on order type.
+/// - Market: all bids accepted
+/// - Limit: only bids with net value >= limit_price
+/// - Stop: treated as market once triggered (stop worker handles activation)
+fn filter_bids_for_order_type(intent: &Intent, bids: Vec<SolverBid>) -> Vec<SolverBid> {
+    match intent.order_type {
+        OrderType::Limit => {
+            let limit = intent.limit_price.unwrap_or(0);
+            let total = bids.len();
+            let filtered: Vec<SolverBid> = bids
+                .into_iter()
+                .filter(|b| b.amount_out.saturating_sub(b.fee) >= limit)
+                .collect();
+            if filtered.len() < total {
+                tracing::info!(
+                    intent_id = %intent.id,
+                    limit_price = limit,
+                    total_bids = total,
+                    accepted = filtered.len(),
+                    "limit_order_bid_filter"
+                );
+            }
+            filtered
+        }
+        OrderType::Market | OrderType::Stop => bids,
+    }
+}
+
 /// Generate partial fills from best to worst bid until intent quantity is filled.
 fn generate_partial_fills(intent: &Intent, sorted_bids: &[SolverBid]) -> Vec<Fill> {
     let mut remaining = intent.amount_in;
@@ -229,7 +261,17 @@ mod tests {
             deadline: 9999999999,
             status: IntentStatus::Bidding,
             created_at: 1,
+            order_type: OrderType::Market,
+            limit_price: None,
+            stop_price: None,
         }
+    }
+
+    fn make_limit_intent(amount_in: i64, limit: i64) -> Intent {
+        let mut i = make_intent(amount_in);
+        i.order_type = OrderType::Limit;
+        i.limit_price = Some(limit);
+        i
     }
 
     fn make_bid(solver: &str, amount_out: i64, fee: i64, ts: i64) -> SolverBid {
@@ -317,5 +359,38 @@ mod tests {
         let fills = generate_partial_fills(&intent, &bids);
         assert_eq!(fills.len(), 1); // only s1 needed
         assert_eq!(fills[0].filled_qty, 100);
+    }
+
+    #[test]
+    fn limit_order_filters_bad_bids() {
+        let intent = make_limit_intent(1000, 500); // limit_price = 500
+        let bids = vec![
+            make_bid("s1", 600, 10, 1), // net 590 >= 500 ✓
+            make_bid("s2", 400, 10, 2), // net 390 < 500 ✗
+            make_bid("s3", 550, 50, 3), // net 500 >= 500 ✓
+        ];
+
+        let filtered = filter_bids_for_order_type(&intent, bids);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].solver_id, "s1");
+        assert_eq!(filtered[1].solver_id, "s3");
+    }
+
+    #[test]
+    fn limit_order_no_qualifying_bids() {
+        let intent = make_limit_intent(1000, 9999);
+        let bids = vec![make_bid("s1", 100, 10, 1)];
+
+        let filtered = filter_bids_for_order_type(&intent, bids);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn market_order_accepts_all_bids() {
+        let intent = make_intent(1000);
+        let bids = vec![make_bid("s1", 10, 5, 1), make_bid("s2", 5, 5, 2)];
+
+        let filtered = filter_bids_for_order_type(&intent, bids);
+        assert_eq!(filtered.len(), 2);
     }
 }

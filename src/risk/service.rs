@@ -9,6 +9,7 @@ use crate::balances::service::BalanceService;
 use crate::config;
 use crate::markets::model::Market;
 use crate::markets::service::MarketService;
+use crate::oracle::service::OracleService;
 
 #[derive(Debug, Clone)]
 pub enum RiskRejection {
@@ -93,6 +94,7 @@ impl UserActivity {
 pub struct RiskEngine {
     balance_service: Arc<BalanceService>,
     market_service: Arc<MarketService>,
+    oracle: Arc<OracleService>,
     user_activity: Mutex<HashMap<String, UserActivity>>,
 }
 
@@ -100,10 +102,12 @@ impl RiskEngine {
     pub fn new(
         balance_service: Arc<BalanceService>,
         market_service: Arc<MarketService>,
+        oracle: Arc<OracleService>,
     ) -> Self {
         Self {
             balance_service,
             market_service,
+            oracle,
             user_activity: Mutex::new(HashMap::new()),
         }
     }
@@ -132,8 +136,8 @@ impl RiskEngine {
         self.check_balance(params.account_id, &asset_in, params.amount_in)
             .await?;
 
-        // 4. Price deviation (implied price vs reasonable range)
-        self.check_price_deviation(params.amount_in, params.min_amount_out, &market)?;
+        // 4. Price deviation (implied price vs oracle price)
+        self.check_price_deviation(params.amount_in, params.min_amount_out, &market).await?;
 
         // 5. Rate limit + daily volume
         self.check_user_limits(&params.user_id, params.amount_in)
@@ -201,44 +205,50 @@ impl RiskEngine {
         Ok(())
     }
 
-    fn check_price_deviation(
+    async fn check_price_deviation(
         &self,
         amount_in: u64,
         min_amount_out: u64,
         market: &Market,
     ) -> Result<(), RiskRejection> {
         if min_amount_out == 0 || amount_in == 0 {
-            return Ok(()); // Can't compute implied price
+            return Ok(());
         }
 
-        // Implied price = amount_in / min_amount_out
-        // We check that min_amount_out is within a reasonable range relative
-        // to tick_size as a rough proxy for market price.
-        // If tick_size is very small relative to the ratio, the price is extreme.
         let implied_price = amount_in as f64 / min_amount_out as f64;
 
-        // Use tick_size as a baseline unit. If the implied price is more than
-        // config::get().max_price_deviation away from 1 tick unit, flag it.
-        // This is a simplified check — in production you'd compare against
-        // the last traded price or an oracle.
-        if market.tick_size > 0 {
-            let tick_price = market.tick_size as f64;
-            // Only flag if the ratio is wildly off (e.g., someone asks for
-            // 1 ETH and offers 1 USDC — a 99%+ deviation).
-            if implied_price > 0.0 {
-                let ratio = if implied_price > tick_price {
-                    (implied_price - tick_price) / tick_price
+        // Try oracle price first, fall back to tick_size
+        let reference_price = match self.oracle.get_price_value(&market.id).await {
+            Some(oracle_price) if oracle_price > 0 => {
+                tracing::debug!(
+                    market_id = %market.id,
+                    oracle_price = oracle_price,
+                    "Using oracle price for deviation check"
+                );
+                oracle_price as f64
+            }
+            _ => {
+                if market.tick_size > 0 {
+                    market.tick_size as f64
                 } else {
-                    (tick_price - implied_price) / tick_price
-                };
-
-                if ratio > config::get().max_price_deviation * 100.0 {
-                    return Err(RiskRejection::PriceDeviationTooHigh {
-                        deviation_pct: ratio * 100.0,
-                        max_pct: config::get().max_price_deviation * 100.0,
-                    });
+                    return Ok(()); // No reference price available
                 }
             }
+        };
+
+        let max_deviation = config::get().max_price_deviation;
+
+        let deviation = if implied_price > reference_price {
+            (implied_price - reference_price) / reference_price
+        } else {
+            (reference_price - implied_price) / reference_price
+        };
+
+        if deviation > max_deviation {
+            return Err(RiskRejection::PriceDeviationTooHigh {
+                deviation_pct: deviation * 100.0,
+                max_pct: max_deviation * 100.0,
+            });
         }
 
         Ok(())

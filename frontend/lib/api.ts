@@ -5,6 +5,13 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+// Auth
+export const authRegister = (data: { email: string; password: string }) =>
+  api.post("/auth/register", data).then((r) => r.data);
+
+export const authLogin = (data: { email: string; password: string }) =>
+  api.post("/auth/login", data).then((r) => r.data);
+
 // Markets
 export const getMarkets = () => api.get("/markets").then((r) => r.data);
 export const getMarket = (id: string) =>
@@ -64,13 +71,6 @@ export const withdraw = (data: {
   asset: string;
   amount: number;
 }) => api.post("/balances/withdraw", data).then((r) => r.data);
-
-// Users
-export const register = (data: { email: string; password: string }) =>
-  api.post("/users/register", data).then((r) => r.data);
-
-export const login = (data: { email: string; password: string }) =>
-  api.post("/users/login", data).then((r) => r.data);
 
 // Accounts
 export const getAccounts = (userId: string) =>

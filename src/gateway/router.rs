@@ -24,12 +24,14 @@ pub fn build_router(
     api_key_service: Arc<ApiKeyService>,
     rate_limiter: RateLimiter,
 ) -> Router {
+    let signing_secret = crate::config::get().internal_signing_secret.clone();
     let proxy_state = ProxyState {
         client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("Failed to build HTTP client"),
         upstream_url: config.upstream_url,
+        signing_secret,
     };
 
     let service_routes = Router::new()

@@ -20,3 +20,6 @@ pub mod api_key_service;
 // Solver position tracker for the solver-bot binary
 pub mod solver;
 
+// Request signing for inter-service communication
+pub mod signing;
+

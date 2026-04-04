@@ -21,7 +21,7 @@ pub async fn validate_auth(request: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix(BEARER_PREFIX))
     {
-        return match jwt::validate_token(token) {
+        return match jwt::validate_token_sync(token) {
             Ok(claims) => {
                 let mut request = request;
                 let headers = request.headers_mut();

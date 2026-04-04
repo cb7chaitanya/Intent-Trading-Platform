@@ -24,7 +24,7 @@ pub async fn require_auth(mut request: Request, next: Next) -> Response {
             .into_response();
     };
 
-    match jwt::validate_token(token) {
+    match jwt::validate_token(token).await {
         Ok(claims) => {
             tracing::debug!(
                 user_id = %claims.sub,

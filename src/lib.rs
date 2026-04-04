@@ -10,6 +10,9 @@ pub mod jwt {
 #[path = "auth/jwt.rs"]
 mod _jwt_impl;
 
+#[path = "auth/key_rotation.rs"]
+mod key_rotation;
+
 // API key service for the gateway binary
 #[path = "api_keys/service.rs"]
 pub mod api_key_service;

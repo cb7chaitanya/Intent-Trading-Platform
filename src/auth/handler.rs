@@ -44,6 +44,7 @@ pub async fn register(
         .unwrap_or_else(|_| vec!["trader".to_string()]);
 
     let token = jwt::create_token(auth.user_id, &auth.email, roles.clone())
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok((
@@ -70,6 +71,7 @@ pub async fn login(
         .unwrap_or_default();
 
     let token = jwt::create_token(auth.user_id, &auth.email, roles.clone())
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(TokenResponse {

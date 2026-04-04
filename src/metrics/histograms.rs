@@ -42,3 +42,43 @@ pub static AUCTION_DURATION: Lazy<Histogram> = Lazy::new(|| {
     REGISTRY.register(Box::new(h.clone())).unwrap();
     h
 });
+
+pub static TRADE_EXECUTION_DURATION: Lazy<Histogram> = Lazy::new(|| {
+    let h = Histogram::with_opts(
+        HistogramOpts::new(
+            "trade_execution_duration_seconds",
+            "Time from execution start to completion",
+        )
+        .buckets(vec![0.1, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0]),
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(h.clone())).unwrap();
+    h
+});
+
+pub static DB_QUERY_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    let h = HistogramVec::new(
+        HistogramOpts::new(
+            "db_query_duration_seconds",
+            "Database query latency in seconds",
+        )
+        .buckets(vec![0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5]),
+        &["operation"],
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(h.clone())).unwrap();
+    h
+});
+
+pub static SETTLEMENT_DURATION: Lazy<Histogram> = Lazy::new(|| {
+    let h = Histogram::with_opts(
+        HistogramOpts::new(
+            "settlement_duration_seconds",
+            "Time to settle a trade",
+        )
+        .buckets(vec![0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]),
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(h.clone())).unwrap();
+    h
+});

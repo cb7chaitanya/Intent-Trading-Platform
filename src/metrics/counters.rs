@@ -21,6 +21,12 @@ pub static BIDS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     c
 });
 
+pub static AUCTIONS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let c = IntCounter::new("auctions_total", "Total auctions completed").unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
 pub static SETTLEMENT_SUCCESS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
     let c = IntCounter::new("settlement_success_total", "Total successful settlements").unwrap();
     REGISTRY.register(Box::new(c.clone())).unwrap();
@@ -71,6 +77,16 @@ pub static SOLVER_WINS: Lazy<IntCounterVec> = Lazy::new(|| {
 
 pub static TRADES_PER_SECOND: Lazy<IntCounter> = Lazy::new(|| {
     let c = IntCounter::new("trades_executed_counter", "Monotonic trade counter for rate calculation").unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
+pub static DB_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("db_queries_total", "Total database queries"),
+        &["operation"],
+    )
+    .unwrap();
     REGISTRY.register(Box::new(c.clone())).unwrap();
     c
 });

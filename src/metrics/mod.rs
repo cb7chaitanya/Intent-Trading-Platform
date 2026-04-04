@@ -57,7 +57,12 @@ pub fn init() {
     let _ = &*gauges::ACTIVE_AUCTIONS;
     let _ = &*gauges::WEBSOCKET_CONNECTIONS;
     let _ = &*gauges::BIDS_PER_AUCTION;
+    let _ = &*counters::AUCTIONS_TOTAL;
+    let _ = &*counters::DB_QUERIES_TOTAL;
     let _ = &*histograms::API_REQUEST_DURATION;
     let _ = &*histograms::MATCHING_ENGINE_LATENCY;
     let _ = &*histograms::AUCTION_DURATION;
+    let _ = &*histograms::TRADE_EXECUTION_DURATION;
+    let _ = &*histograms::DB_QUERY_DURATION;
+    let _ = &*histograms::SETTLEMENT_DURATION;
 }

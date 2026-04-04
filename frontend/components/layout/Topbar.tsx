@@ -1,11 +1,13 @@
 import React from "react";
-import { Sun, Moon, Bell, Search } from "lucide-react";
+import { Sun, Moon, Bell, Search, LogOut, User } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { useWebSocket } from "@/contexts/WebSocketProvider";
+import { useAuth } from "@/contexts/AuthProvider";
 
 const Topbar: React.FC = () => {
   const { dark, toggle } = useTheme();
   const { connected } = useWebSocket();
+  const { user, logout } = useAuth();
 
   return (
     <header className="sticky top-0 z-20 flex h-14 items-center justify-between border-b bg-surface-1/80 backdrop-blur-md px-6">
@@ -49,6 +51,31 @@ const Topbar: React.FC = () => {
         >
           {dark ? <Sun size={18} /> : <Moon size={18} />}
         </button>
+
+        {/* User info + logout */}
+        {user && (
+          <div className="flex items-center gap-2 border-l pl-3">
+            <div className="h-7 w-7 rounded-full bg-brand-600/20 flex items-center justify-center">
+              <User size={14} className="text-brand-400" />
+            </div>
+            <div className="hidden sm:block">
+              <p className="text-xs font-medium leading-none truncate max-w-[120px]">
+                {user.email}
+              </p>
+              <p className="text-[10px] text-[var(--text-muted)]">
+                {user.roles.join(", ")}
+              </p>
+            </div>
+            <button
+              onClick={logout}
+              className="btn-ghost !p-1.5"
+              aria-label="Logout"
+              title="Sign out"
+            >
+              <LogOut size={16} />
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

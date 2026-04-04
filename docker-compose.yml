@@ -137,6 +137,24 @@ services:
     depends_on:
       - intent-trading
 
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./infra/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    volumes:
+      - ./infra/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+
   grafana:
     image: grafana/grafana:latest
     ports:
@@ -150,6 +168,7 @@ services:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       - prometheus
+      - loki
 
   # --------------- Load Testing (on-demand) ---------------
   load-test:
@@ -190,3 +209,4 @@ services:
 volumes:
   pgdata:
   certbot-webroot:
+  loki-data:

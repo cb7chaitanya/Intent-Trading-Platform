@@ -101,6 +101,10 @@ async fn main() {
         .expect("Failed to run database migrations");
     tracing::info!("Migrations complete");
 
+    // JWT key rotation service
+    let key_rotation = Arc::new(auth::key_rotation::KeyRotationService::new(pg_pool.clone()));
+    auth::jwt::init_key_service(Arc::clone(&key_rotation));
+
     // Redis cache service
     let cache_service = Arc::new(
         cache::CacheService::new(&cfg.redis_url)
@@ -312,6 +316,13 @@ async fn main() {
     let token = shutdown.token();
     bg_tasks.push(tokio::spawn(async move {
         workers::intent_expiry::run(expiry_pool, expiry_event_bus, token).await;
+    }));
+
+    // Background task: JWT key rotation
+    let key_rotation_worker = auth::key_rotation::KeyRotationService::new(health_pool.clone());
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        key_rotation_worker.run_rotation_worker(token).await;
     }));
 
     // Build combined router

@@ -4,40 +4,87 @@ use axum::response::{IntoResponse, Response};
 
 use crate::auth::jwt::Claims;
 
-/// Create a middleware closure that checks if the user has the required role.
-/// Must be applied after `require_auth` middleware (which injects Claims).
+/// Extract permissions from either:
+/// 1. JWT Claims (injected by require_auth middleware)
+/// 2. x-user-permissions header (injected by API gateway for API key users)
+fn extract_permissions(request: &Request) -> Vec<String> {
+    // Try JWT claims first
+    if let Some(claims) = request.extensions().get::<Claims>() {
+        return claims.permissions.clone();
+    }
+
+    // Fallback: x-user-permissions header (comma-separated)
+    request
+        .headers()
+        .get("x-user-permissions")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
+fn extract_user_id(request: &Request) -> String {
+    if let Some(claims) = request.extensions().get::<Claims>() {
+        return claims.sub.to_string();
+    }
+    request
+        .headers()
+        .get("x-user-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+fn has_permission(permissions: &[String], required: &str) -> bool {
+    let parts: Vec<&str> = required.splitn(2, ':').collect();
+    let (resource, action) = if parts.len() == 2 {
+        (parts[0], parts[1])
+    } else {
+        (required, "*")
+    };
+
+    permissions.iter().any(|p| {
+        p == "admin"
+            || p == "*:*"
+            || p == required
+            || p == &format!("{resource}:*")
+            || (action == "*" && p.starts_with(&format!("{resource}:")))
+    })
+}
+
+/// Require a specific permission in "resource:action" format.
+///
+/// Checks both JWT claims and x-user-permissions header.
+/// Admin role bypasses all checks.
 ///
 /// Usage:
-///   .layer(middleware::from_fn(require_role("admin")))
-pub fn require_role(
-    role: &'static str,
+/// ```
+///   .route_layer(middleware::from_fn(require_perm("intent:create")))
+/// ```
+pub fn require_perm(
+    permission: &'static str,
 ) -> impl Fn(Request, axum::middleware::Next) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = Response> + Send>,
 > + Clone
        + Send {
     move |request: Request, next: axum::middleware::Next| {
         Box::pin(async move {
-            let claims = match request.extensions().get::<Claims>() {
-                Some(c) => c.clone(),
-                None => {
-                    return (StatusCode::UNAUTHORIZED, "Authentication required")
-                        .into_response();
-                }
-            };
+            let user_id = extract_user_id(&request);
+            let permissions = extract_permissions(&request);
 
-            // Check if the role is in the JWT permissions/roles
-            let has_role = claims.permissions.iter().any(|p| p == role || p == "admin");
+            if permissions.is_empty() {
+                return (StatusCode::UNAUTHORIZED, "No permissions found").into_response();
+            }
 
-            if !has_role {
+            if !has_permission(&permissions, permission) {
                 tracing::warn!(
-                    user_id = %claims.sub,
-                    required_role = role,
-                    user_roles = ?claims.permissions,
-                    "access_denied"
+                    user_id = %user_id,
+                    required = permission,
+                    available = ?permissions,
+                    "permission_denied"
                 );
                 return (
                     StatusCode::FORBIDDEN,
-                    format!("Role '{role}' required"),
+                    format!("Permission '{permission}' required"),
                 )
                     .into_response();
             }
@@ -47,51 +94,61 @@ pub fn require_role(
     }
 }
 
-/// Create a middleware closure that checks if the user has permission
-/// for a specific resource and action.
-pub fn require_permission(
-    resource: &'static str,
-    action: &'static str,
+/// Require a specific role (convenience wrapper).
+pub fn require_role(
+    role: &'static str,
 ) -> impl Fn(Request, axum::middleware::Next) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = Response> + Send>,
 > + Clone
        + Send {
-    move |request: Request, next: axum::middleware::Next| {
-        Box::pin(async move {
-            let claims = match request.extensions().get::<Claims>() {
-                Some(c) => c.clone(),
-                None => {
-                    return (StatusCode::UNAUTHORIZED, "Authentication required")
-                        .into_response();
-                }
-            };
+    require_perm(role)
+}
 
-            // admin has all permissions
-            if claims.permissions.contains(&"admin".to_string()) {
-                return next.run(request).await;
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            // Check for specific permission in format "resource:action"
-            let required = format!("{resource}:{action}");
-            let has_perm = claims.permissions.iter().any(|p| {
-                p == &required || p == &format!("{resource}:*") || p == "*:*"
-            });
+    #[test]
+    fn admin_has_all_permissions() {
+        let perms = vec!["admin".to_string()];
+        assert!(has_permission(&perms, "intent:create"));
+        assert!(has_permission(&perms, "bid:create"));
+        assert!(has_permission(&perms, "anything:whatever"));
+    }
 
-            if !has_perm {
-                tracing::warn!(
-                    user_id = %claims.sub,
-                    resource = resource,
-                    action = action,
-                    "permission_denied"
-                );
-                return (
-                    StatusCode::FORBIDDEN,
-                    format!("Permission '{resource}:{action}' required"),
-                )
-                    .into_response();
-            }
+    #[test]
+    fn wildcard_resource() {
+        let perms = vec!["intent:*".to_string()];
+        assert!(has_permission(&perms, "intent:create"));
+        assert!(has_permission(&perms, "intent:read"));
+        assert!(!has_permission(&perms, "bid:create"));
+    }
 
-            next.run(request).await
-        })
+    #[test]
+    fn exact_match() {
+        let perms = vec!["intent:create".to_string(), "market:read".to_string()];
+        assert!(has_permission(&perms, "intent:create"));
+        assert!(has_permission(&perms, "market:read"));
+        assert!(!has_permission(&perms, "intent:delete"));
+        assert!(!has_permission(&perms, "bid:create"));
+    }
+
+    #[test]
+    fn global_wildcard() {
+        let perms = vec!["*:*".to_string()];
+        assert!(has_permission(&perms, "anything:here"));
+    }
+
+    #[test]
+    fn empty_permissions() {
+        let perms: Vec<String> = vec![];
+        assert!(!has_permission(&perms, "intent:create"));
+    }
+
+    #[test]
+    fn role_check() {
+        let perms = vec!["trader".to_string()];
+        assert!(has_permission(&perms, "trader"));
+        assert!(!has_permission(&perms, "admin"));
     }
 }

@@ -16,3 +16,7 @@ mod key_rotation;
 // API key service for the gateway binary
 #[path = "api_keys/service.rs"]
 pub mod api_key_service;
+
+// Solver position tracker for the solver-bot binary
+pub mod solver;
+

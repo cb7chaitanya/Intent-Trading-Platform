@@ -106,8 +106,8 @@ impl Storage {
 
     pub async fn insert_fill(&self, fill: &Fill) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO fills (id, intent_id, solver_id, price, qty, filled_qty, tx_hash, timestamp)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            "INSERT INTO fills (id, intent_id, solver_id, price, qty, filled_qty, tx_hash, timestamp, settled, settled_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(fill.id)
         .bind(fill.intent_id)
@@ -117,6 +117,8 @@ impl Storage {
         .bind(fill.filled_qty)
         .bind(&fill.tx_hash)
         .bind(fill.timestamp)
+        .bind(fill.settled)
+        .bind(fill.settled_at)
         .execute(&self.pool)
         .await?;
         Ok(())

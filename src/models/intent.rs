@@ -12,6 +12,7 @@ pub enum IntentStatus {
     Completed,
     Failed,
     Cancelled,
+    Expired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

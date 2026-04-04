@@ -48,6 +48,26 @@ impl SettlementEngine {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Settle with automatic failure recording for retry.
+    pub async fn settle_trade_with_retry(&self, trade_id: Uuid) -> Result<Trade, SettlementError> {
+        match self.settle_trade(trade_id).await {
+            Ok(trade) => Ok(trade),
+            Err(SettlementError::AlreadySettled) => {
+                // Idempotent — not a failure
+                Err(SettlementError::AlreadySettled)
+            }
+            Err(e) => {
+                // Record for retry
+                let _ = super::retry::record_failure(&self.pool, trade_id, &e.to_string()).await;
+                Err(e)
+            }
+        }
+    }
+
     pub fn platform_account_id() -> Uuid {
         PLATFORM_ACCOUNT_ID.parse().unwrap()
     }

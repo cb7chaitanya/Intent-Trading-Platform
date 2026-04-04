@@ -58,6 +58,8 @@ pub fn init() {
     let _ = &*gauges::WEBSOCKET_CONNECTIONS;
     let _ = &*gauges::BIDS_PER_AUCTION;
     let _ = &*counters::AUCTIONS_TOTAL;
+    let _ = &*counters::CACHE_HITS;
+    let _ = &*counters::CACHE_MISSES;
     let _ = &*counters::DB_QUERIES_TOTAL;
     let _ = &*histograms::API_REQUEST_DURATION;
     let _ = &*histograms::MATCHING_ENGINE_LATENCY;

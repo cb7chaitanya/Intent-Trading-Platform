@@ -81,6 +81,26 @@ pub static TRADES_PER_SECOND: Lazy<IntCounter> = Lazy::new(|| {
     c
 });
 
+pub static CACHE_HITS: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("cache_hits_total", "Cache hits by key type"),
+        &["key_type"],
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
+pub static CACHE_MISSES: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("cache_misses_total", "Cache misses by key type"),
+        &["key_type"],
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
 pub static DB_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     let c = IntCounterVec::new(
         Opts::new("db_queries_total", "Total database queries"),

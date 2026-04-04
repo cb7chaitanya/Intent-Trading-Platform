@@ -19,7 +19,11 @@ pub struct GatewayConfig {
     pub database_url: String,
 }
 
-pub fn build_router(config: GatewayConfig, api_key_service: Arc<ApiKeyService>) -> Router {
+pub fn build_router(
+    config: GatewayConfig,
+    api_key_service: Arc<ApiKeyService>,
+    rate_limiter: RateLimiter,
+) -> Router {
     let proxy_state = ProxyState {
         client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -27,8 +31,6 @@ pub fn build_router(config: GatewayConfig, api_key_service: Arc<ApiKeyService>) 
             .expect("Failed to build HTTP client"),
         upstream_url: config.upstream_url,
     };
-
-    let rate_limiter = RateLimiter::new();
 
     let service_routes = Router::new()
         .route("/users/{*rest}", any(proxy_handler))
@@ -53,7 +55,6 @@ pub fn build_router(config: GatewayConfig, api_key_service: Arc<ApiKeyService>) 
         .layer(axum::Extension(api_key_service))
         .layer(RateLimitLayer::new(rate_limiter));
 
-    // Public routes (no auth required)
     let public_routes = Router::new()
         .route("/auth/{*rest}", any(proxy_handler))
         .with_state(proxy_state);

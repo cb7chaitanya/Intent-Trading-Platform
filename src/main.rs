@@ -377,6 +377,13 @@ async fn main() {
         workers::partition_manager::run(partition_pool, token).await;
     }));
 
+    // Background task: partition archival
+    let archival_pool = health_pool.clone();
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        workers::partition_archival::run(archival_pool, token).await;
+    }));
+
     // Build combined router
     let app_state = AppState {
         intent_service,

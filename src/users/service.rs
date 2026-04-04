@@ -11,6 +11,7 @@ use super::repository::UserRepository;
 #[derive(Debug)]
 pub enum UserError {
     EmailTaken,
+    WeakPassword(Vec<String>),
     InvalidCredentials,
     HashError(String),
     DbError(sqlx::Error),
@@ -21,6 +22,7 @@ impl std::fmt::Display for UserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UserError::EmailTaken => write!(f, "Email already registered"),
+            UserError::WeakPassword(errs) => write!(f, "Weak password: {}", errs.join("; ")),
             UserError::InvalidCredentials => write!(f, "Invalid email or password"),
             UserError::HashError(e) => write!(f, "Password hash error: {e}"),
             UserError::DbError(e) => write!(f, "Database error: {e}"),
@@ -49,6 +51,10 @@ impl UserService {
     }
 
     pub async fn register(&self, req: RegisterRequest) -> Result<AuthResponse, UserError> {
+        if let Err(violations) = super::password::validate(&req.password, &req.email) {
+            return Err(UserError::WeakPassword(violations));
+        }
+
         if self.repo.find_by_email(&req.email).await?.is_some() {
             return Err(UserError::EmailTaken);
         }

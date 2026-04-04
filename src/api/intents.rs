@@ -43,7 +43,7 @@ pub async fn list_intents(
     State(state): State<AppState>,
 ) -> Json<Vec<Intent>> {
     let svc = state.intent_service.lock().await;
-    Json(svc.list_intents())
+    Json(svc.list_intents().await)
 }
 
 pub async fn get_intent(
@@ -52,6 +52,7 @@ pub async fn get_intent(
 ) -> Result<Json<Intent>, StatusCode> {
     let svc = state.intent_service.lock().await;
     svc.get_intent(&id)
+        .await
         .map(Json)
         .ok_or(StatusCode::NOT_FOUND)
 }
@@ -62,7 +63,7 @@ fn map_error(e: IntentError) -> (StatusCode, String) {
         IntentError::InvalidAsset(_) => (StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
         IntentError::RiskRejected(_) => (StatusCode::FORBIDDEN, e.to_string()),
         IntentError::IntentNotFound => (StatusCode::NOT_FOUND, e.to_string()),
-        IntentError::RedisError(_) | IntentError::BalanceError(_) => {
+        IntentError::StorageError(_) | IntentError::RedisError(_) | IntentError::BalanceError(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }
     }

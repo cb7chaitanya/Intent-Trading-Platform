@@ -116,11 +116,11 @@ async fn main() {
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
 
     // User service
-    let user_repo = UserRepository::new(pg_pool);
+    let user_repo = UserRepository::new(pg_pool.clone());
     let user_service = Arc::new(UserService::new(user_repo, Arc::clone(&account_service)));
 
-    // Shared storage
-    let storage = Arc::new(Storage::new());
+    // Postgres-backed storage for intents, bids, fills, executions
+    let storage = Arc::new(Storage::new(pg_pool));
 
     // Each component gets its own EventBus (separate Redis connections)
     let intent_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for IntentService");

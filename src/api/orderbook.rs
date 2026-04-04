@@ -10,5 +10,5 @@ pub async fn get_orderbook(
     Path(intent_id): Path<Uuid>,
 ) -> Json<Vec<SolverBid>> {
     let svc = state.bid_service.lock().await;
-    Json(svc.build_orderbook(&intent_id))
+    Json(svc.build_orderbook(&intent_id).await)
 }

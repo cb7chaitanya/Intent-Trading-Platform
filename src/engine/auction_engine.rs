@@ -99,6 +99,7 @@ async fn run_auction(
     histograms::MATCHING_ENGINE_LATENCY.observe(match_start.elapsed().as_secs_f64());
 
     histograms::AUCTION_DURATION.observe(auction_start.elapsed().as_secs_f64());
+    counters::AUCTIONS_TOTAL.inc();
     gauges::ACTIVE_AUCTIONS.dec();
 
     result

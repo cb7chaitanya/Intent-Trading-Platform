@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use uuid::Uuid;
+
+use crate::cache::service::{CacheService, CacheTtl};
 
 use super::model::{CreateMarketRequest, Market};
 use super::repository::MarketRepository;
@@ -27,11 +31,17 @@ impl From<sqlx::Error> for MarketError {
 
 pub struct MarketService {
     repo: MarketRepository,
+    cache: Option<Arc<CacheService>>,
 }
 
 impl MarketService {
     pub fn new(repo: MarketRepository) -> Self {
-        Self { repo }
+        Self { repo, cache: None }
+    }
+
+    pub fn with_cache(mut self, cache: Arc<CacheService>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     pub async fn create_market(&self, req: CreateMarketRequest) -> Result<Market, MarketError> {
@@ -45,17 +55,46 @@ impl MarketService {
             created_at: Utc::now(),
         };
         self.repo.insert(&market).await?;
+
+        // Invalidate market list cache
+        if let Some(cache) = &self.cache {
+            cache.invalidate("markets", "all").await;
+        }
+
         Ok(market)
     }
 
     pub async fn get_market(&self, market_id: Uuid) -> Result<Market, MarketError> {
-        self.repo
-            .find_by_id(market_id)
-            .await?
-            .ok_or(MarketError::NotFound)
+        let key = market_id.to_string();
+
+        if let Some(cache) = &self.cache {
+            if let Some(market) = cache.get::<Market>("market", &key).await {
+                return Ok(market);
+            }
+        }
+
+        let market = self.repo.find_by_id(market_id).await?.ok_or(MarketError::NotFound)?;
+
+        if let Some(cache) = &self.cache {
+            cache.set("market", &key, &market, CacheTtl::MARKETS).await;
+        }
+
+        Ok(market)
     }
 
     pub async fn list_markets(&self) -> Result<Vec<Market>, MarketError> {
-        Ok(self.repo.find_all().await?)
+        if let Some(cache) = &self.cache {
+            if let Some(markets) = cache.get::<Vec<Market>>("markets", "all").await {
+                return Ok(markets);
+            }
+        }
+
+        let markets = self.repo.find_all().await?;
+
+        if let Some(cache) = &self.cache {
+            cache.set("markets", "all", &markets, CacheTtl::MARKETS).await;
+        }
+
+        Ok(markets)
     }
 }

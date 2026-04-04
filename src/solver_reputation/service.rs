@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
+
+use crate::cache::service::{CacheService, CacheTtl};
 
 use super::model::Solver;
 use super::repository::SolverRepository;
@@ -26,11 +30,26 @@ impl From<sqlx::Error> for SolverError {
 
 pub struct SolverReputationService {
     repo: SolverRepository,
+    cache: Option<Arc<CacheService>>,
 }
 
 impl SolverReputationService {
     pub fn new(repo: SolverRepository) -> Self {
-        Self { repo }
+        Self { repo, cache: None }
+    }
+
+    pub fn with_cache(mut self, cache: Arc<CacheService>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    fn invalidate_leaderboard(&self) {
+        if let Some(cache) = &self.cache {
+            let cache = cache.clone();
+            tokio::spawn(async move {
+                cache.invalidate_pattern("leaderboard").await;
+            });
+        }
     }
 
     pub async fn record_successful_trade(
@@ -44,6 +63,7 @@ impl SolverReputationService {
         solver.total_volume += volume;
         solver.reputation_score = calculate_reputation(&solver);
         self.repo.update(&solver).await?;
+        self.invalidate_leaderboard();
         Ok(solver)
     }
 
@@ -56,6 +76,7 @@ impl SolverReputationService {
         solver.failed_trades += 1;
         solver.reputation_score = calculate_reputation(&solver);
         self.repo.update(&solver).await?;
+        self.invalidate_leaderboard();
         Ok(solver)
     }
 
@@ -68,29 +89,30 @@ impl SolverReputationService {
 
     pub async fn get_top_solvers(&self, limit: i64) -> Result<Vec<Solver>, SolverError> {
         let limit = limit.clamp(1, 100);
-        Ok(self.repo.find_top(limit).await?)
+        let key = format!("top_{limit}");
+
+        if let Some(cache) = &self.cache {
+            if let Some(solvers) = cache.get::<Vec<Solver>>("leaderboard", &key).await {
+                return Ok(solvers);
+            }
+        }
+
+        let solvers = self.repo.find_top(limit).await?;
+
+        if let Some(cache) = &self.cache {
+            cache.set("leaderboard", &key, &solvers, CacheTtl::LEADERBOARD).await;
+        }
+
+        Ok(solvers)
     }
 }
 
-/// Reputation = success_rate * log2(1 + total_trades) * volume_bonus
-///
-/// - success_rate: successful / total (0.0–1.0)
-/// - trade activity: logarithmic scaling so early trades matter more
-/// - volume_bonus: 1.0 + log10(1 + total_volume) / 20, mild boost for higher volume
-///
-/// Score range: roughly 0.0–10.0+ for active, reliable solvers.
 fn calculate_reputation(solver: &Solver) -> f64 {
     let total = solver.successful_trades + solver.failed_trades;
-    if total == 0 {
-        return 0.0;
-    }
-
+    if total == 0 { return 0.0; }
     let success_rate = solver.successful_trades as f64 / total as f64;
     let activity = (1.0 + total as f64).log2();
     let volume_bonus = 1.0 + (1.0 + solver.total_volume as f64).log10() / 20.0;
-
     let score = success_rate * activity * volume_bonus;
-
-    // Round to 4 decimal places
     (score * 10000.0).round() / 10000.0
 }

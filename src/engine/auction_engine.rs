@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::db::redis::{Event, EventBus, INTENT_CREATED};
 use crate::db::storage::Storage;
+use crate::metrics::{counters, gauges, histograms};
 use crate::models::bid::SolverBid;
 use crate::models::fill::Fill;
 use crate::models::intent::{Intent, IntentStatus};
@@ -71,6 +72,9 @@ async fn run_auction(
     event_bus: Arc<Mutex<EventBus>>,
     intent_id: Uuid,
 ) -> Result<(), redis::RedisError> {
+    gauges::ACTIVE_AUCTIONS.inc();
+    let auction_start = std::time::Instant::now();
+
     // Start bidding phase
     if let Some(mut intent) = storage.get_intent(&intent_id) {
         intent.status = IntentStatus::Bidding;
@@ -85,8 +89,19 @@ async fn run_auction(
     // Wait for bids
     tokio::time::sleep(tokio::time::Duration::from_secs(AUCTION_DURATION_SECS)).await;
 
-    // Close auction
-    close_auction(&storage, &event_bus, &intent_id).await
+    // Record bid count for this auction
+    let bid_count = storage.get_bids(&intent_id).len() as i64;
+    gauges::BIDS_PER_AUCTION.set(bid_count);
+
+    // Close auction with matching latency tracking
+    let match_start = std::time::Instant::now();
+    let result = close_auction(&storage, &event_bus, &intent_id).await;
+    histograms::MATCHING_ENGINE_LATENCY.observe(match_start.elapsed().as_secs_f64());
+
+    histograms::AUCTION_DURATION.observe(auction_start.elapsed().as_secs_f64());
+    gauges::ACTIVE_AUCTIONS.dec();
+
+    result
 }
 
 async fn close_auction(
@@ -106,6 +121,10 @@ async fn close_auction(
 
             intent.status = IntentStatus::Matched;
             storage.update_intent(intent.clone());
+
+            counters::SOLVER_WINS
+                .with_label_values(&[&bid.solver_id])
+                .inc();
 
             event_bus
                 .lock()
@@ -143,6 +162,6 @@ fn generate_fill(intent: &Intent, bid: &SolverBid) -> Fill {
         bid.solver_id.clone(),
         bid.amount_out,
         intent.amount_in,
-        String::new(), // tx_hash populated during execution
+        String::new(),
     )
 }

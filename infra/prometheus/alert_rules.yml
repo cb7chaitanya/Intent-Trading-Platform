@@ -1,0 +1,248 @@
+groups:
+  # ================================================================
+  # API & Gateway
+  # ================================================================
+  - name: api
+    rules:
+      - alert: HighApiErrorRate
+        expr: >
+          sum(rate(api_requests_total{status=~"5.."}[5m]))
+          / sum(rate(api_requests_total[5m]))
+          > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API 5xx error rate above 5%"
+          description: "{{ $value | humanizePercentage }} of requests are returning 5xx over the last 5 minutes."
+
+      - alert: HighApiLatencyP95
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1.0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency above 1 second"
+          description: "p95 latency is {{ $value | humanizeDuration }}."
+
+      - alert: HighApiLatencyP99
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
+          ) > 3.0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API p99 latency above 3 seconds"
+
+      - alert: High4xxRate
+        expr: >
+          sum(rate(api_requests_total{status=~"4.."}[5m]))
+          / sum(rate(api_requests_total[5m]))
+          > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API 4xx error rate above 20%"
+          description: "May indicate client-side issues, bad auth, or rate limiting."
+
+  # ================================================================
+  # Settlement
+  # ================================================================
+  - name: settlement
+    rules:
+      - alert: SettlementFailuresHigh
+        expr: increase(settlement_failures_total[15m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} settlement failures in 15 minutes"
+          description: "Check failed_settlements table and retry worker logs."
+
+      - alert: SettlementRetryQueueHigh
+        expr: >
+          pg_stat_user_tables_n_live_tup{relname="failed_settlements"} > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Settlement retry queue has {{ $value }} pending entries"
+
+      - alert: SettlementLatencyHigh
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(settlement_duration_seconds_bucket[5m])) by (le)
+          ) > 5.0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Settlement p95 latency above 5 seconds"
+
+  # ================================================================
+  # Trading Engine
+  # ================================================================
+  - name: trading
+    rules:
+      - alert: MatchingLatencyHigh
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(matching_engine_latency_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Matching engine p95 latency above 500ms"
+
+      - alert: AuctionDurationHigh
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(auction_duration_seconds_bucket[5m])) by (le)
+          ) > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auction p95 duration above 30 seconds"
+
+      - alert: NoTradesExecuted
+        expr: increase(trades_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No trades executed in 30 minutes"
+          description: "Trading activity has stopped. Check auction and execution engines."
+
+      - alert: CacheHitRateLow
+        expr: >
+          sum(rate(cache_hits_total[5m]))
+          / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))
+          < 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate below 50%"
+          description: "Redis cache may be cold or misconfigured."
+
+  # ================================================================
+  # Infrastructure — Database
+  # ================================================================
+  - name: database
+    rules:
+      - alert: DbQueryLatencyHigh
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
+          ) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database p95 query latency above 100ms"
+
+      - alert: DbConnectionsNearLimit
+        expr: >
+          pg_stat_activity_count
+          / pg_settings_max_connections
+          > 0.8
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connections at {{ $value | humanizePercentage }} of max"
+
+  # ================================================================
+  # Infrastructure — Redis
+  # ================================================================
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is unreachable"
+          description: "Event bus, cache, rate limiting, and streams are all affected."
+
+  # ================================================================
+  # Infrastructure — Services
+  # ================================================================
+  - name: services
+    rules:
+      - alert: PlatformDown
+        expr: up{job="intent-trading"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Intent trading platform is down"
+
+      - alert: GatewayDown
+        expr: up{job="api-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API gateway is down"
+
+      - alert: HealthCheckFailing
+        expr: >
+          probe_success{job="blackbox", instance=~".*health/ready.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Health check failing for {{ $labels.instance }}"
+
+  # ================================================================
+  # Oracle
+  # ================================================================
+  - name: oracle
+    rules:
+      - alert: OraclePriceStale
+        expr: >
+          (time() - max(pg_stat_user_tables_last_autovacuum{relname="market_prices"}))
+          > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oracle prices not updated in 2+ minutes"
+          description: "The oracle worker may be stuck. Check logs."
+
+  # ================================================================
+  # Disk
+  # ================================================================
+  - name: disk
+    rules:
+      - alert: DiskSpaceLow
+        expr: >
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"})
+          < 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 10% on {{ $labels.instance }}"
+
+      - alert: DiskSpaceWarning
+        expr: >
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"})
+          < 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space below 20% on {{ $labels.instance }}"

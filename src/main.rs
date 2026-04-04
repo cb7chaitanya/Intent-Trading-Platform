@@ -325,6 +325,13 @@ async fn main() {
         key_rotation_worker.run_rotation_worker(token).await;
     }));
 
+    // Background task: partition manager
+    let partition_pool = health_pool.clone();
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        workers::partition_manager::run(partition_pool, token).await;
+    }));
+
     // Build combined router
     let app_state = AppState {
         intent_service,

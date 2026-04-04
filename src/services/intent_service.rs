@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use crate::metrics::counters;
 use crate::balances::model::Asset;
 use crate::balances::service::{BalanceError, BalanceService};
 use crate::db::redis::{Event, EventBus};
@@ -116,6 +117,8 @@ impl IntentService {
             .stream_bus
             .publish(STREAM_INTENT_CREATED, &intent)
             .await;
+
+        counters::INTENTS_TOTAL.inc();
 
         Ok(intent)
     }

@@ -15,5 +15,6 @@ pub fn router(settlement_engine: Arc<SettlementEngine>) -> Router {
         .route("/trades", post(handler::create_trade))
         .route("/trades/{trade_id}/settle", post(handler::settle_trade))
         .route("/trades/{trade_id}", get(handler::get_trade))
+        .route("/intents/{intent_id}/settle", post(handler::settle_intent))
         .with_state(settlement_engine)
 }

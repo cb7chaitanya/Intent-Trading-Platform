@@ -16,6 +16,8 @@ pub enum RiskRejection {
     InsufficientBalance { available: i64, required: u64 },
     BelowMinOrderSize { min: i64, got: u64 },
     PriceDeviationTooHigh { deviation_pct: f64, max_pct: f64 },
+    BidPriceDeviation { bid_price: f64, oracle_price: f64, deviation_pct: f64 },
+    CrossMarketArbitrage { market_a_price: f64, market_b_price: f64, spread_pct: f64 },
     MarketNotFound,
     MarketInactive,
     RateLimitExceeded { limit: u64 },
@@ -34,6 +36,12 @@ impl std::fmt::Display for RiskRejection {
             }
             RiskRejection::PriceDeviationTooHigh { deviation_pct, max_pct } => {
                 write!(f, "Price deviation {deviation_pct:.1}% exceeds max {max_pct:.1}%")
+            }
+            RiskRejection::BidPriceDeviation { bid_price, oracle_price, deviation_pct } => {
+                write!(f, "Bid price {bid_price:.2} deviates {deviation_pct:.1}% from oracle {oracle_price:.2}")
+            }
+            RiskRejection::CrossMarketArbitrage { market_a_price, market_b_price, spread_pct } => {
+                write!(f, "Cross-market arbitrage detected: prices {market_a_price:.2} vs {market_b_price:.2} ({spread_pct:.1}% spread)")
             }
             RiskRejection::MarketNotFound => write!(f, "Market not found"),
             RiskRejection::MarketInactive => write!(f, "Market is not active"),
@@ -249,6 +257,129 @@ impl RiskEngine {
                 deviation_pct: deviation * 100.0,
                 max_pct: max_deviation * 100.0,
             });
+        }
+
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // Bid validation (called by BidService before accepting a bid)
+    // ---------------------------------------------------------------
+
+    /// Validate a solver bid against oracle price and cross-market consistency.
+    pub async fn validate_bid(
+        &self,
+        intent_token_in: &str,
+        intent_token_out: &str,
+        bid_amount_out: i64,
+        bid_fee: i64,
+        intent_amount_in: i64,
+    ) -> Result<(), RiskRejection> {
+        if intent_amount_in == 0 {
+            return Ok(());
+        }
+
+        let asset_in = parse_asset(intent_token_in)?;
+        let asset_out = parse_asset(intent_token_out)?;
+
+        let market = self.find_market(&asset_in, &asset_out).await?;
+
+        // Implied bid price = intent_amount_in / (bid_amount_out - bid_fee)
+        let net_bid = bid_amount_out.saturating_sub(bid_fee);
+        if net_bid <= 0 {
+            return Ok(()); // degenerate bid, will lose auction anyway
+        }
+        let bid_price = intent_amount_in as f64 / net_bid as f64;
+
+        // Check bid price vs oracle
+        self.check_bid_vs_oracle(bid_price, &market).await?;
+
+        // Check cross-market arbitrage
+        self.check_cross_market(&asset_in, bid_price).await?;
+
+        Ok(())
+    }
+
+    /// Reject bids whose implied price deviates too far from oracle.
+    async fn check_bid_vs_oracle(
+        &self,
+        bid_price: f64,
+        market: &Market,
+    ) -> Result<(), RiskRejection> {
+        let oracle_price = match self.oracle.get_price_value(&market.id).await {
+            Some(p) if p > 0 => p as f64,
+            _ => return Ok(()), // no oracle data — skip check
+        };
+
+        let max_dev = config::get().max_price_deviation;
+        let deviation = (bid_price - oracle_price).abs() / oracle_price;
+
+        if deviation > max_dev {
+            tracing::warn!(
+                market_id = %market.id,
+                bid_price,
+                oracle_price,
+                deviation_pct = deviation * 100.0,
+                "bid_price_deviation_rejected"
+            );
+            return Err(RiskRejection::BidPriceDeviation {
+                bid_price,
+                oracle_price,
+                deviation_pct: deviation * 100.0,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Compare oracle prices across markets with the same base asset.
+    /// If two markets for the same base (e.g., ETH/USDC and ETH/BTC)
+    /// show a price spread beyond threshold, flag potential arbitrage.
+    async fn check_cross_market(
+        &self,
+        base_asset: &Asset,
+        bid_price: f64,
+    ) -> Result<(), RiskRejection> {
+        let markets = match self.market_service.list_markets().await {
+            Ok(m) => m,
+            Err(_) => return Ok(()),
+        };
+
+        // Find all markets with the same base asset
+        let related: Vec<&Market> = markets
+            .iter()
+            .filter(|m| &m.base_asset == base_asset)
+            .collect();
+
+        if related.len() < 2 {
+            return Ok(()); // single market — no cross-market check needed
+        }
+
+        let max_spread = config::get().max_price_deviation * 2.0; // allow wider spread cross-market
+
+        for market in &related {
+            let oracle_price = match self.oracle.get_price_value(&market.id).await {
+                Some(p) if p > 0 => p as f64,
+                _ => continue,
+            };
+
+            let spread = (bid_price - oracle_price).abs() / oracle_price;
+
+            if spread > max_spread {
+                tracing::warn!(
+                    base_asset = ?base_asset,
+                    market_id = %market.id,
+                    bid_price,
+                    oracle_price,
+                    spread_pct = spread * 100.0,
+                    "cross_market_arbitrage_detected"
+                );
+                return Err(RiskRejection::CrossMarketArbitrage {
+                    market_a_price: bid_price,
+                    market_b_price: oracle_price,
+                    spread_pct: spread * 100.0,
+                });
+            }
         }
 
         Ok(())

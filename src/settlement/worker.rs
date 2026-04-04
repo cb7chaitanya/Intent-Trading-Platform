@@ -5,7 +5,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::balances::model::Asset;
-use crate::db::stream_bus::{StreamBus, STREAM_EXECUTION_COMPLETED};
+use crate::db::stream_bus::{StreamBus, STREAM_EXECUTION_COMPLETED, STREAM_INTENT_SETTLED};
 use crate::models::intent::IntentStatus;
 
 use super::engine::SettlementEngine;
@@ -50,8 +50,9 @@ pub async fn run(
             result = stream_bus.subscribe(streams, group, consumer, |event| {
                 let settlement = Arc::clone(&settlement);
                 let pool = pool.clone();
+                let bus = Arc::clone(&stream_bus);
                 async move {
-                    process_event(&settlement, &pool, &event.payload).await;
+                    process_event(&settlement, &pool, &bus, &event.payload).await;
                 }
             }) => {
                 if let Err(e) = result {
@@ -66,9 +67,17 @@ pub async fn run(
     }
 }
 
+/// Event published when an intent's settlement is fully complete.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IntentSettledEvent {
+    pub intent_id: Uuid,
+    pub settled_qty: i64,
+}
+
 async fn process_event(
     settlement: &SettlementEngine,
     pool: &PgPool,
+    stream_bus: &Arc<StreamBus>,
     payload: &str,
 ) {
     let event: ExecutionCompletedEvent = match serde_json::from_str(payload) {
@@ -135,10 +144,10 @@ async fn process_event(
     }
 
     // After settling this fill, recompute intent status
-    update_intent_status(settlement, event.intent_id).await;
+    update_intent_status(settlement, stream_bus, event.intent_id).await;
 }
 
-async fn update_intent_status(settlement: &SettlementEngine, intent_id: Uuid) {
+async fn update_intent_status(settlement: &SettlementEngine, stream_bus: &Arc<StreamBus>, intent_id: Uuid) {
     let pool = settlement.pool();
 
     let intent_amount = match sqlx::query_scalar::<_, i64>(
@@ -181,6 +190,13 @@ async fn update_intent_status(settlement: &SettlementEngine, intent_id: Uuid) {
         status = ?new_status,
         "intent_status_auto_updated"
     );
+
+    // Emit intent.settled event when fully completed
+    if new_status == IntentStatus::Completed {
+        let settled_event = IntentSettledEvent { intent_id, settled_qty };
+        let _ = stream_bus.publish(STREAM_INTENT_SETTLED, &settled_event).await;
+        tracing::info!(intent_id = %intent_id, "intent_settled_event_published");
+    }
 }
 
 fn parse_asset(s: &str) -> Option<Asset> {

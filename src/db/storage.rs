@@ -23,8 +23,8 @@ impl Storage {
 
     pub async fn insert_intent(&self, intent: &Intent) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO intents (id, user_id, token_in, token_out, amount_in, min_amount_out, deadline, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "INSERT INTO intents (id, user_id, token_in, token_out, amount_in, min_amount_out, deadline, status, created_at, order_type, limit_price, stop_price)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(intent.id)
         .bind(&intent.user_id)
@@ -35,6 +35,9 @@ impl Storage {
         .bind(intent.deadline)
         .bind(&intent.status)
         .bind(intent.created_at)
+        .bind(&intent.order_type)
+        .bind(intent.limit_price)
+        .bind(intent.stop_price)
         .execute(&self.pool)
         .await?;
         Ok(())

@@ -1,5 +1,6 @@
 mod accounts;
 mod api;
+mod api_keys;
 mod auth;
 mod balances;
 mod config;
@@ -125,6 +126,9 @@ async fn main() {
 
     // RBAC service
     let rbac_service = Arc::new(rbac::service::RbacService::new(pg_pool.clone()));
+
+    // API key service
+    let api_key_service = Arc::new(api_keys::service::ApiKeyService::new(pg_pool.clone()));
 
     // Settlement engine
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
@@ -310,6 +314,7 @@ async fn main() {
     let protected = api::router(app_state)
         .merge(accounts::router(account_service))
         .merge(balances::router(balance_service))
+        .merge(api_keys::router(api_key_service))
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
         .layer(idempotency::IdempotencyLayer::new(idempotency_pool))

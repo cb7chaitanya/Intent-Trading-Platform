@@ -22,6 +22,7 @@ mod services;
 mod settlement;
 mod shutdown;
 mod solver_reputation;
+mod twap;
 mod users;
 mod workers;
 mod ws;
@@ -325,6 +326,21 @@ async fn main() {
         key_rotation_worker.run_rotation_worker(token).await;
     }));
 
+    // TWAP service
+    let twap_service = Arc::new(twap::service::TwapService::new(
+        health_pool.clone(),
+        Arc::clone(&intent_service),
+    ));
+
+    // Background task: TWAP scheduler
+    let twap_scheduler_pool = health_pool.clone();
+    let twap_scheduler_intent = Arc::clone(&intent_service);
+    let twap_scheduler_svc = Arc::clone(&twap_service);
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        twap::scheduler::run(twap_scheduler_pool, twap_scheduler_intent, twap_scheduler_svc, token).await;
+    }));
+
     // Background task: partition manager
     let partition_pool = health_pool.clone();
     let token = shutdown.token();
@@ -350,6 +366,7 @@ async fn main() {
         .merge(api_keys::router(api_key_service))
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
+        .merge(twap::router(twap_service))
         .layer(idempotency::IdempotencyLayer::new(idempotency_pool))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));
 

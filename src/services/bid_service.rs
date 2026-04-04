@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::db::redis::{Event, EventBus};
 use crate::db::storage::Storage;
 use crate::db::stream_bus::{StreamBus, STREAM_BID_SUBMITTED};
+use crate::metrics::counters;
 use crate::models::bid::SolverBid;
 
 pub struct BidService {
@@ -36,6 +37,8 @@ impl BidService {
             .await?;
 
         let _ = self.stream_bus.publish(STREAM_BID_SUBMITTED, &bid).await;
+
+        counters::BIDS_TOTAL.inc();
 
         Ok(bid)
     }

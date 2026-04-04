@@ -212,7 +212,12 @@ async fn main() {
 
     // Engines
     let auction_engine = AuctionEngine::new(Arc::clone(&storage), auction_bus, cfg.auction_duration_secs);
-    let execution_engine = ExecutionEngine::new(Arc::clone(&storage), execution_bus, cfg.execution_duration_secs);
+    let execution_engine = ExecutionEngine::new(
+        Arc::clone(&storage),
+        execution_bus,
+        Arc::clone(&stream_bus),
+        cfg.execution_duration_secs,
+    );
 
     // Spawn stream consumer that forwards events to WebSocket feed
     let stream_consumer_bus = Arc::clone(&stream_bus);
@@ -301,6 +306,21 @@ async fn main() {
                 tracing::info!("WS Redis listener shutting down");
             }
         }
+    }));
+
+    // Background task: settlement worker (auto-settles after execution)
+    let settlement_worker_bus = Arc::clone(&stream_bus);
+    let settlement_worker_engine = Arc::clone(&settlement_engine);
+    let settlement_worker_pool = health_pool.clone();
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        settlement::worker::run(
+            settlement_worker_bus,
+            settlement_worker_engine,
+            settlement_worker_pool,
+            token,
+        )
+        .await;
     }));
 
     // Background task: settlement retry worker

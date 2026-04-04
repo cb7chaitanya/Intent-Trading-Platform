@@ -1,18 +1,14 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::db::stream_bus::{StreamBus, STREAM_INTENT_SETTLED};
 use crate::settlement::worker::IntentSettledEvent;
 
-use super::model::{TwapChildIntent, TwapStatus};
+use super::model::TwapChildIntent;
 use super::service::TwapService;
 
-/// Background worker that listens for intent.settled events and updates
-/// TWAP parent progress when a child intent completes settlement.
 pub async fn run(
     stream_bus: Arc<StreamBus>,
     twap_service: Arc<TwapService>,
@@ -59,23 +55,19 @@ async fn process_intent_settled(
 ) {
     let event: IntentSettledEvent = match serde_json::from_str(payload) {
         Ok(e) => e,
-        Err(e) => {
-            tracing::debug!(error = %e, "Not a valid IntentSettledEvent (may not be TWAP-related)");
-            return;
-        }
+        Err(_) => return,
     };
 
     // Check if this intent is a TWAP child
-    let child = sqlx::query_as::<_, TwapChildIntent>(
+    let child = match sqlx::query_as::<_, TwapChildIntent>(
         "SELECT * FROM twap_child_intents WHERE intent_id = $1",
     )
     .bind(event.intent_id)
     .fetch_optional(pool)
-    .await;
-
-    let child = match child {
+    .await
+    {
         Ok(Some(c)) => c,
-        Ok(None) => return, // Not a TWAP child — ignore
+        Ok(None) => return, // Not a TWAP child
         Err(e) => {
             tracing::error!(error = %e, "Failed to look up TWAP child");
             return;
@@ -87,81 +79,42 @@ async fn process_intent_settled(
         child_id = %child.id,
         intent_id = %event.intent_id,
         settled_qty = event.settled_qty,
+        status = %event.status,
         slice = child.slice_index,
-        "twap_child_settled"
+        "twap_child_event"
     );
 
-    // Record child completion in TWAP service
-    if let Err(e) = twap_service
-        .record_child_completed(child.twap_id, child.id, event.settled_qty)
-        .await
-    {
-        tracing::error!(
-            twap_id = %child.twap_id,
-            error = %e,
-            "Failed to record TWAP child completion"
-        );
-        return;
-    }
-
-    // Check for TWAP expiry (deadline passed with remaining qty)
-    check_twap_expiry(pool, child.twap_id).await;
-}
-
-async fn check_twap_expiry(pool: &PgPool, twap_id: Uuid) {
-    let result = sqlx::query_as::<_, (i64, i64, String)>(
-        "SELECT duration_secs, EXTRACT(EPOCH FROM created_at)::BIGINT, status::text
-         FROM twap_intents WHERE id = $1",
-    )
-    .bind(twap_id)
-    .fetch_optional(pool)
-    .await;
-
-    let (duration, created_epoch, status) = match result {
-        Ok(Some(r)) => r,
-        _ => return,
-    };
-
-    if status != "active" {
-        return;
-    }
-
-    let deadline = created_epoch + duration;
-    let now = Utc::now().timestamp();
-
-    if now > deadline {
-        // Check if there's remaining unfilled qty
-        let remaining = sqlx::query_scalar::<_, i64>(
-            "SELECT total_qty - filled_qty FROM twap_intents WHERE id = $1",
-        )
-        .bind(twap_id)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-
-        if remaining > 0 {
-            let _ = sqlx::query(
-                "UPDATE twap_intents SET status = 'failed', finished_at = NOW() WHERE id = $1 AND status = 'active'",
-            )
-            .bind(twap_id)
-            .execute(pool)
-            .await;
-
-            // Cancel remaining pending children
-            let _ = sqlx::query(
-                "UPDATE twap_child_intents SET status = 'expired' WHERE twap_id = $1 AND status = 'pending'",
-            )
-            .bind(twap_id)
-            .execute(pool)
-            .await;
-
-            tracing::warn!(
-                twap_id = %twap_id,
-                remaining_qty = remaining,
-                "twap_expired_with_remaining"
+    match event.status.as_str() {
+        "Completed" => {
+            if let Err(e) = twap_service
+                .record_child_completed(child.twap_id, child.id, event.settled_qty)
+                .await
+            {
+                tracing::error!(twap_id = %child.twap_id, error = %e, "twap_record_completed_failed");
+            }
+        }
+        "PartiallyFilled" => {
+            // PartiallyFilled means some fills settled but not all.
+            // Update the TWAP with whatever has been settled so far.
+            // The next event (Completed or Expired) will finalize.
+            tracing::info!(
+                twap_id = %child.twap_id,
+                intent_id = %event.intent_id,
+                settled_qty = event.settled_qty,
+                "twap_child_partially_filled"
             );
+            // Don't increment slices_completed yet — wait for final state
+        }
+        "Expired" => {
+            if let Err(e) = twap_service
+                .record_child_expired(child.twap_id, child.id)
+                .await
+            {
+                tracing::error!(twap_id = %child.twap_id, error = %e, "twap_record_expired_failed");
+            }
+        }
+        other => {
+            tracing::debug!(status = other, "Ignoring unhandled intent status for TWAP");
         }
     }
 }

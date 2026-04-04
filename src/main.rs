@@ -15,6 +15,7 @@ mod models;
 mod risk;
 mod services;
 mod settlement;
+mod shutdown;
 mod solver_reputation;
 mod users;
 mod ws;
@@ -45,6 +46,7 @@ use crate::engine::auction_engine::AuctionEngine;
 use crate::engine::execution_engine::ExecutionEngine;
 use crate::services::bid_service::BidService;
 use crate::services::intent_service::IntentService;
+use crate::shutdown::Shutdown;
 use crate::users::repository::UserRepository;
 use crate::users::service::UserService;
 use crate::ws::feed::WsFeed;
@@ -71,6 +73,9 @@ async fn main() {
         .init();
 
     tracing::info!(environment = %cfg.environment, "Starting Intent-Based Trading Platform");
+
+    // Shutdown coordinator
+    let shutdown = Shutdown::new();
 
     // Initialize all Prometheus metrics
     metrics::init();
@@ -122,7 +127,7 @@ async fn main() {
     let user_service = Arc::new(UserService::new(user_repo, Arc::clone(&account_service)));
 
     // Postgres-backed storage for intents, bids, fills, executions
-    let storage_pool = pg_pool.clone();
+    let health_pool = pg_pool.clone();
     let storage = Arc::new(Storage::new(pg_pool));
 
     // Each component gets its own EventBus (separate Redis connections)
@@ -172,15 +177,16 @@ async fn main() {
 
     // Spawn stream consumer that forwards events to WebSocket feed
     let stream_consumer_bus = Arc::clone(&stream_bus);
-    let stream_consumer_feed = {
-        // ws_feed created below, need forward ref
-        Arc::new(WsFeed::new())
-    };
+    let stream_consumer_feed = Arc::new(WsFeed::new());
     let ws_feed = Arc::clone(&stream_consumer_feed);
 
-    tokio::spawn(async move {
-        if let Err(e) = stream_consumer_bus
-            .subscribe(
+    let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Background task: stream consumer → WS forwarder
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        tokio::select! {
+            result = stream_consumer_bus.subscribe(
                 crate::db::stream_bus::ALL_STREAMS,
                 "platform",
                 "ws-forwarder",
@@ -196,36 +202,62 @@ async fn main() {
                         feed.broadcast_global(&msg.to_string());
                     }
                 },
-            )
-            .await
-        {
-            tracing::error!(error = %e, "Stream consumer error");
+            ) => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "Stream consumer error");
+                }
+            }
+            _ = token.cancelled() => {
+                tracing::info!("Stream consumer shutting down");
+            }
         }
-    });
+    }));
 
-    // WebSocket server (global Redis relay on /ws)
+    // Background task: auction engine
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        tokio::select! {
+            result = auction_engine.start() => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "AuctionEngine error");
+                }
+            }
+            _ = token.cancelled() => {
+                tracing::info!("AuctionEngine shutting down");
+            }
+        }
+    }));
+
+    // Background task: execution engine
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        tokio::select! {
+            result = execution_engine.start() => {
+                if let Err(e) = result {
+                    tracing::error!(error = %e, "ExecutionEngine error");
+                }
+            }
+            _ = token.cancelled() => {
+                tracing::info!("ExecutionEngine shutting down");
+            }
+        }
+    }));
+
+    // Background task: WS Redis relay
     let ws_server = WsServer::new();
     let ws_redis_client = ws_bus.client().clone();
-
-    // Spawn background tasks
-    tokio::spawn(async move {
-        if let Err(e) = auction_engine.start().await {
-            tracing::error!(error = %e, "AuctionEngine error");
-        }
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = execution_engine.start().await {
-            tracing::error!(error = %e, "ExecutionEngine error");
-        }
-    });
-
     let ws_listener = ws_server.clone();
-    tokio::spawn(async move {
-        ws_listener.start_redis_listener(&ws_redis_client).await;
-    });
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        tokio::select! {
+            _ = ws_listener.start_redis_listener(&ws_redis_client) => {}
+            _ = token.cancelled() => {
+                tracing::info!("WS Redis listener shutting down");
+            }
+        }
+    }));
 
-    // Build combined router: API + WebSocket
+    // Build combined router
     let app_state = AppState {
         intent_service,
         bid_service,
@@ -241,7 +273,7 @@ async fn main() {
 
     // Health check routes
     let health_state = health::HealthState {
-        pg_pool: storage_pool,
+        pg_pool: health_pool,
         redis_url: cfg.redis_url.clone(),
     };
 
@@ -258,10 +290,31 @@ async fn main() {
 
     let app = protected.merge(public);
 
-    // Start server
+    // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(&cfg.server_addr)
         .await
         .expect("Failed to bind server address");
     tracing::info!(addr = %cfg.server_addr, "Server listening");
-    axum::serve(listener, app).await.expect("Server error");
+
+    let shutdown_for_signal = shutdown.clone();
+    tokio::spawn(async move {
+        shutdown_for_signal.listen_for_signals().await;
+    });
+
+    let shutdown_token = shutdown.token();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_token.cancelled().await;
+            tracing::info!("HTTP server stopping — draining in-flight requests");
+        })
+        .await
+        .expect("Server error");
+
+    // Server has stopped accepting new connections.
+    // Wait for background tasks to finish gracefully.
+    tracing::info!("Server stopped, cleaning up background tasks...");
+    shutdown.trigger(); // ensure all tasks see cancellation
+    shutdown.wait_for_completion(bg_tasks).await;
+
+    tracing::info!("Shutdown complete");
 }

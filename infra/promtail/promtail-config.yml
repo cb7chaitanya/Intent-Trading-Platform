@@ -1,0 +1,52 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Scrape Docker container logs
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Use container name as label
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.+)'
+        target_label: container
+      # Use compose service name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: service
+      # Use compose project
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: project
+      # Only scrape running containers
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: stream
+    pipeline_stages:
+      # Try to parse JSON logs from Rust services
+      - json:
+          expressions:
+            timestamp: timestamp
+            level: level
+            message: fields.message
+            target: target
+            span_name: span.name
+            intent_id: fields.intent_id
+            trade_id: fields.trade_id
+            solver_id: fields.solver_id
+            user_id: fields.user_id
+            duration_ms: fields.duration_ms
+            error: fields.error
+      - labels:
+          level:
+          target:
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+          fallback_formats:
+            - "2006-01-02T15:04:05Z07:00"

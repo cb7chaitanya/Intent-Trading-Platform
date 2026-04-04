@@ -106,21 +106,30 @@ impl Storage {
 
     pub async fn insert_fill(&self, fill: &Fill) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO fills (intent_id, solver_id, price, qty, tx_hash, timestamp)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (intent_id) DO UPDATE SET
-                solver_id = EXCLUDED.solver_id, price = EXCLUDED.price,
-                qty = EXCLUDED.qty, tx_hash = EXCLUDED.tx_hash, timestamp = EXCLUDED.timestamp",
+            "INSERT INTO fills (id, intent_id, solver_id, price, qty, filled_qty, tx_hash, timestamp)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
+        .bind(fill.id)
         .bind(fill.intent_id)
         .bind(&fill.solver_id)
         .bind(fill.price)
         .bind(fill.qty)
+        .bind(fill.filled_qty)
         .bind(&fill.tx_hash)
         .bind(fill.timestamp)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn get_fills(&self, intent_id: &Uuid) -> Vec<Fill> {
+        sqlx::query_as::<_, Fill>(
+            "SELECT * FROM fills WHERE intent_id = $1 ORDER BY price DESC",
+        )
+        .bind(intent_id)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default()
     }
 
     // --- Executions ---

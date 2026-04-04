@@ -3,7 +3,47 @@ import axios from "axios";
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000",
   headers: { "Content-Type": "application/json" },
+  withCredentials: true, // send cookies for CSRF
 });
+
+// CSRF: fetch token before mutating requests
+let csrfToken: string | null = null;
+
+async function ensureCsrfToken() {
+  if (!csrfToken) {
+    const resp = await api.get("/csrf-token");
+    csrfToken = resp.data.token;
+  }
+  return csrfToken;
+}
+
+// Attach CSRF token to POST/PUT/DELETE requests
+api.interceptors.request.use(async (config) => {
+  const method = config.method?.toUpperCase();
+  if (method === "POST" || method === "PUT" || method === "DELETE" || method === "PATCH") {
+    const token = await ensureCsrfToken();
+    if (token) {
+      config.headers["X-CSRF-Token"] = token;
+    }
+  }
+  return config;
+});
+
+// If CSRF token is rejected, refresh and retry once
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    if (error.response?.status === 403 && error.response?.data?.includes?.("CSRF")) {
+      csrfToken = null;
+      const token = await ensureCsrfToken();
+      if (token && error.config) {
+        error.config.headers["X-CSRF-Token"] = token;
+        return api.request(error.config);
+      }
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Auth
 export const authRegister = (data: { email: string; password: string }) =>

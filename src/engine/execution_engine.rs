@@ -6,21 +6,30 @@ use uuid::Uuid;
 
 use crate::db::redis::{Event, EventBus, INTENT_MATCHED};
 use crate::db::storage::Storage;
+use crate::db::stream_bus::{StreamBus, STREAM_EXECUTION_COMPLETED};
 use crate::metrics::{counters, histograms};
 use crate::models::execution::{Execution, ExecutionStatus};
 use crate::models::intent::IntentStatus;
+use crate::settlement::worker::ExecutionCompletedEvent;
 
 pub struct ExecutionEngine {
     storage: Arc<Storage>,
     event_bus: Arc<Mutex<EventBus>>,
+    stream_bus: Arc<StreamBus>,
     execution_duration_secs: u64,
 }
 
 impl ExecutionEngine {
-    pub fn new(storage: Arc<Storage>, event_bus: EventBus, execution_duration_secs: u64) -> Self {
+    pub fn new(
+        storage: Arc<Storage>,
+        event_bus: EventBus,
+        stream_bus: Arc<StreamBus>,
+        execution_duration_secs: u64,
+    ) -> Self {
         Self {
             storage,
             event_bus: Arc::new(Mutex::new(event_bus)),
+            stream_bus,
             execution_duration_secs,
         }
     }
@@ -54,9 +63,12 @@ impl ExecutionEngine {
             if let Event::IntentMatched { intent, bid: _ } = event {
                 let storage = Arc::clone(&self.storage);
                 let event_bus = Arc::clone(&self.event_bus);
+                let stream_bus = Arc::clone(&self.stream_bus);
                 let duration = self.execution_duration_secs;
                 tokio::spawn(async move {
-                    if let Err(e) = execute_fills(storage, event_bus, intent.id, duration).await {
+                    if let Err(e) =
+                        execute_fills(storage, event_bus, stream_bus, intent.id, duration).await
+                    {
                         tracing::error!(intent_id = %intent.id, error = %e, "execution_failed");
                     }
                 });
@@ -67,10 +79,10 @@ impl ExecutionEngine {
     }
 }
 
-/// Execute all fills for an intent. Each fill gets its own execution record.
 async fn execute_fills(
     storage: Arc<Storage>,
     event_bus: Arc<Mutex<EventBus>>,
+    stream_bus: Arc<StreamBus>,
     intent_id: Uuid,
     execution_duration_secs: u64,
 ) -> Result<(), redis::RedisError> {
@@ -80,58 +92,64 @@ async fn execute_fills(
         return Ok(());
     }
 
-    tracing::info!(
-        intent_id = %intent_id,
-        fill_count = fills.len(),
-        "executing_fills"
-    );
+    let intent = match storage.get_intent(&intent_id).await {
+        Some(i) => i,
+        None => {
+            tracing::error!(intent_id = %intent_id, "Intent not found during execution");
+            return Ok(());
+        }
+    };
 
-    // Mark intent as executing
-    if let Some(mut intent) = storage.get_intent(&intent_id).await {
-        intent.status = IntentStatus::Executing;
-        let _ = storage.update_intent(&intent).await;
+    let buyer_account_id = resolve_account(storage.pool(), &intent.user_id).await;
+
+    tracing::info!(intent_id = %intent_id, fill_count = fills.len(), "executing_fills");
+
+    if let Some(mut i) = storage.get_intent(&intent_id).await {
+        i.status = IntentStatus::Executing;
+        let _ = storage.update_intent(&i).await;
     }
 
-    // Execute each fill
     for fill in &fills {
         let exec_start = std::time::Instant::now();
         let tx_hash = format!("0x{}", Uuid::new_v4().simple());
 
         tracing::info!(
-            intent_id = %intent_id,
-            fill_id = %fill.id,
-            solver_id = %fill.solver_id,
-            filled_qty = fill.filled_qty,
-            tx_hash = %tx_hash,
-            "fill_execution_started"
+            intent_id = %intent_id, fill_id = %fill.id,
+            solver_id = %fill.solver_id, filled_qty = fill.filled_qty,
+            tx_hash = %tx_hash, "fill_execution_started"
         );
 
-        let mut execution = Execution::new(
-            intent_id,
-            fill.solver_id.clone(),
-            tx_hash,
-        );
+        let mut execution = Execution::new(intent_id, fill.solver_id.clone(), tx_hash);
         execution.status = ExecutionStatus::Executing;
         let _ = storage.insert_execution(&execution).await;
 
-        event_bus
-            .lock()
-            .await
+        event_bus.lock().await
             .publish(&Event::ExecutionStarted(execution.clone()))
             .await?;
 
-        // Simulate execution time
         tokio::time::sleep(tokio::time::Duration::from_secs(execution_duration_secs)).await;
 
         execution.status = ExecutionStatus::Completed;
         let _ = storage.update_execution(&execution).await;
 
         let execution_id = execution.id;
-        event_bus
-            .lock()
-            .await
+        event_bus.lock().await
             .publish(&Event::ExecutionCompleted(execution))
             .await?;
+
+        // Publish settlement trigger to Redis Streams
+        let settlement_event = ExecutionCompletedEvent {
+            execution_id,
+            fill_id: fill.id,
+            intent_id,
+            solver_id: fill.solver_id.clone(),
+            buyer_account_id: buyer_account_id.unwrap_or(Uuid::nil()),
+            seller_account_id: Uuid::nil(),
+            token_in: intent.token_in.clone(),
+            token_out: intent.token_out.clone(),
+            fee_rate: 0.001,
+        };
+        let _ = stream_bus.publish(STREAM_EXECUTION_COMPLETED, &settlement_event).await;
 
         let duration_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
         counters::TRADES_TOTAL.inc();
@@ -139,25 +157,21 @@ async fn execute_fills(
         histograms::TRADE_EXECUTION_DURATION.observe(exec_start.elapsed().as_secs_f64());
 
         tracing::info!(
-            intent_id = %intent_id,
-            execution_id = %execution_id,
-            fill_id = %fill.id,
-            duration_ms = duration_ms,
-            "fill_executed"
+            intent_id = %intent_id, execution_id = %execution_id,
+            fill_id = %fill.id, duration_ms, "fill_executed_settlement_triggered"
         );
     }
 
-    // Mark intent as completed
-    if let Some(mut intent) = storage.get_intent(&intent_id).await {
-        intent.status = IntentStatus::Completed;
-        let _ = storage.update_intent(&intent).await;
-    }
-
-    tracing::info!(
-        intent_id = %intent_id,
-        fills_executed = fills.len(),
-        "intent_execution_completed"
-    );
-
     Ok(())
+}
+
+async fn resolve_account(pool: &sqlx::PgPool, user_id: &str) -> Option<Uuid> {
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT a.id FROM accounts a JOIN users u ON u.id = a.user_id WHERE u.id::text = $1 LIMIT 1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
 }

@@ -7,6 +7,7 @@ pub enum IntentStatus {
     Open,
     Bidding,
     Matched,
+    PartiallyFilled,
     Executing,
     Completed,
     Failed,

@@ -15,6 +15,10 @@ path = "src/bin/solver_bot.rs"
 name = "api-gateway"
 path = "src/bin/api_gateway.rs"
 
+[[bin]]
+name = "load-test"
+path = "src/bin/load_test/main.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }

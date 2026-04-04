@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::db::redis::{Event, EventBus, INTENT_MATCHED};
 use crate::db::storage::Storage;
-use crate::metrics::counters;
+use crate::metrics::{counters, histograms};
 use crate::models::execution::{Execution, ExecutionStatus};
 use crate::models::intent::IntentStatus;
 
@@ -74,6 +74,7 @@ async fn execute_intent(
     intent_id: Uuid,
     solver_id: String,
 ) -> Result<(), redis::RedisError> {
+    let exec_start = std::time::Instant::now();
     let tx_hash = format!("0x{}", Uuid::new_v4().simple());
 
     // Create execution record in Pending state
@@ -115,6 +116,7 @@ async fn execute_intent(
 
     counters::TRADES_TOTAL.inc();
     counters::TRADES_PER_SECOND.inc();
+    histograms::TRADE_EXECUTION_DURATION.observe(exec_start.elapsed().as_secs_f64());
 
     Ok(())
 }

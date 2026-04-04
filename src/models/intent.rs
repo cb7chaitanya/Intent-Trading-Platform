@@ -48,3 +48,30 @@ impl Intent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_intent_defaults_to_open() {
+        let intent = Intent::new(
+            "user1".into(), "ETH".into(), "USDC".into(), 1000, 900, 9999999999,
+        );
+        assert_eq!(intent.status, IntentStatus::Open);
+        assert_eq!(intent.amount_in, 1000);
+        assert_eq!(intent.min_amount_out, 900);
+        assert!(!intent.id.is_nil());
+        assert!(intent.created_at > 0);
+    }
+
+    #[test]
+    fn intent_serializes_to_json() {
+        let intent = Intent::new(
+            "u1".into(), "BTC".into(), "USDC".into(), 500, 400, 123,
+        );
+        let json = serde_json::to_string(&intent).unwrap();
+        assert!(json.contains("\"token_in\":\"BTC\""));
+        assert!(json.contains("\"status\":\"Open\""));
+    }
+}

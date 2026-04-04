@@ -216,3 +216,95 @@ async fn insert_fee_ledger(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::balances::model::Asset;
+    use crate::settlement::model::{Trade, TradeStatus};
+    use chrono::Utc;
+
+    fn make_trade(amount_in: i64) -> Trade {
+        Trade {
+            id: Uuid::new_v4(),
+            buyer_account_id: Uuid::new_v4(),
+            seller_account_id: Uuid::new_v4(),
+            solver_account_id: Uuid::new_v4(),
+            asset_in: Asset::USDC,
+            asset_out: Asset::ETH,
+            amount_in,
+            amount_out: 1,
+            platform_fee: 0,
+            solver_fee: 0,
+            status: TradeStatus::Pending,
+            created_at: Utc::now(),
+            settled_at: None,
+        }
+    }
+
+    fn make_market(fee_rate: f64) -> Market {
+        Market {
+            id: Uuid::new_v4(),
+            base_asset: Asset::ETH,
+            quote_asset: Asset::USDC,
+            tick_size: 1,
+            min_order_size: 1,
+            fee_rate,
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn fee_calculation_basic() {
+        let trade = make_trade(10_000);
+        let market = make_market(0.001); // 0.1%
+        let fees = calculate_fees(&trade, &market);
+
+        assert_eq!(fees.total_fee, 10); // 10_000 * 0.001
+        assert_eq!(fees.solver_fee, 3); // 10 * 0.3
+        assert_eq!(fees.platform_fee, 7); // 10 - 3
+        assert_eq!(fees.taker_fee, 6); // 10 * 0.6
+        assert_eq!(fees.maker_fee, 4); // 10 - 6
+    }
+
+    #[test]
+    fn fee_calculation_zero_amount() {
+        let trade = make_trade(0);
+        let market = make_market(0.01);
+        let fees = calculate_fees(&trade, &market);
+
+        assert_eq!(fees.total_fee, 0);
+        assert_eq!(fees.solver_fee, 0);
+        assert_eq!(fees.platform_fee, 0);
+    }
+
+    #[test]
+    fn fee_calculation_high_rate() {
+        let trade = make_trade(1_000_000);
+        let market = make_market(0.01); // 1%
+        let fees = calculate_fees(&trade, &market);
+
+        assert_eq!(fees.total_fee, 10_000);
+        assert_eq!(fees.solver_fee + fees.platform_fee, fees.total_fee);
+        assert_eq!(fees.maker_fee + fees.taker_fee, fees.total_fee);
+    }
+
+    #[test]
+    fn fee_splits_always_sum_to_total() {
+        for amount in [1, 7, 100, 9999, 1_000_000] {
+            for rate in [0.001, 0.005, 0.01, 0.05] {
+                let fees = calculate_fees(&make_trade(amount), &make_market(rate));
+                assert_eq!(
+                    fees.solver_fee + fees.platform_fee,
+                    fees.total_fee,
+                    "solver+platform != total for amount={amount} rate={rate}"
+                );
+                assert_eq!(
+                    fees.maker_fee + fees.taker_fee,
+                    fees.total_fee,
+                    "maker+taker != total for amount={amount} rate={rate}"
+                );
+            }
+        }
+    }
+}

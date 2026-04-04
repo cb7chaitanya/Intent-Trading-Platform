@@ -47,6 +47,8 @@ jsonwebtoken = "9"
 config = "0.14"
 toml = "0.8"
 tokio-util = "0.7"
+sha2 = "0.10"
+hex = "0.4"
 
 [features]
 integration = []

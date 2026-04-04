@@ -361,6 +361,15 @@ async fn main() {
         twap::scheduler::run(twap_scheduler_pool, twap_scheduler_intent, twap_scheduler_svc, token).await;
     }));
 
+    // Background task: TWAP completion listener
+    let twap_listener_bus = Arc::clone(&stream_bus);
+    let twap_listener_svc = Arc::clone(&twap_service);
+    let twap_listener_pool = health_pool.clone();
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        twap::listener::run(twap_listener_bus, twap_listener_svc, twap_listener_pool, token).await;
+    }));
+
     // Background task: partition manager
     let partition_pool = health_pool.clone();
     let token = shutdown.token();

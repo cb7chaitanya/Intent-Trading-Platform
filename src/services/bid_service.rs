@@ -4,18 +4,21 @@ use uuid::Uuid;
 
 use crate::db::redis::{Event, EventBus};
 use crate::db::storage::Storage;
+use crate::db::stream_bus::{StreamBus, STREAM_BID_SUBMITTED};
 use crate::models::bid::SolverBid;
 
 pub struct BidService {
     storage: Arc<Storage>,
     event_bus: EventBus,
+    stream_bus: Arc<StreamBus>,
 }
 
 impl BidService {
-    pub fn new(storage: Arc<Storage>, event_bus: EventBus) -> Self {
+    pub fn new(storage: Arc<Storage>, event_bus: EventBus, stream_bus: Arc<StreamBus>) -> Self {
         Self {
             storage,
             event_bus,
+            stream_bus,
         }
     }
 
@@ -31,6 +34,9 @@ impl BidService {
         self.event_bus
             .publish(&Event::BidSubmitted(bid.clone()))
             .await?;
+
+        let _ = self.stream_bus.publish(STREAM_BID_SUBMITTED, &bid).await;
+
         Ok(bid)
     }
 

@@ -79,9 +79,9 @@ async fn run_auction(
     let auction_start = std::time::Instant::now();
 
     // Start bidding phase
-    if let Some(mut intent) = storage.get_intent(&intent_id) {
+    if let Some(mut intent) = storage.get_intent(&intent_id).await {
         intent.status = IntentStatus::Bidding;
-        storage.update_intent(intent.clone());
+        let _ = storage.update_intent(&intent).await;
         event_bus
             .lock()
             .await
@@ -93,7 +93,7 @@ async fn run_auction(
     tokio::time::sleep(tokio::time::Duration::from_secs(auction_duration_secs)).await;
 
     // Record bid count for this auction
-    let bid_count = storage.get_bids(&intent_id).len() as i64;
+    let bid_count = storage.get_bids(&intent_id).await.len() as i64;
     gauges::BIDS_PER_AUCTION.set(bid_count);
 
     // Close auction with matching latency tracking
@@ -113,12 +113,12 @@ async fn close_auction(
     event_bus: &Arc<Mutex<EventBus>>,
     intent_id: &Uuid,
 ) -> Result<(), redis::RedisError> {
-    let Some(mut intent) = storage.get_intent(intent_id) else {
+    let Some(mut intent) = storage.get_intent(intent_id).await else {
         tracing::warn!(intent_id = %intent_id, "Intent not found during auction close");
         return Ok(());
     };
 
-    match select_best_bid(storage, intent_id) {
+    match select_best_bid(storage, intent_id).await {
         Some(bid) => {
             tracing::info!(
                 intent_id = %intent_id,
@@ -128,10 +128,10 @@ async fn close_auction(
             );
 
             let fill = generate_fill(&intent, &bid);
-            storage.insert_fill(fill);
+            let _ = storage.insert_fill(&fill).await;
 
             intent.status = IntentStatus::Matched;
-            storage.update_intent(intent.clone());
+            let _ = storage.update_intent(&intent).await;
 
             counters::SOLVER_WINS
                 .with_label_values(&[&bid.solver_id])
@@ -147,7 +147,7 @@ async fn close_auction(
             tracing::warn!(intent_id = %intent_id, "auction_no_bids");
 
             intent.status = IntentStatus::Failed;
-            storage.update_intent(intent.clone());
+            let _ = storage.update_intent(&intent).await;
 
             event_bus
                 .lock()
@@ -160,8 +160,8 @@ async fn close_auction(
     Ok(())
 }
 
-fn select_best_bid(storage: &Storage, intent_id: &Uuid) -> Option<SolverBid> {
-    let bids = storage.get_bids(intent_id);
+async fn select_best_bid(storage: &Storage, intent_id: &Uuid) -> Option<SolverBid> {
+    let bids = storage.get_bids(intent_id).await;
     bids.into_iter().max_by(|a, b| {
         let net_a = a.amount_out.saturating_sub(a.fee);
         let net_b = b.amount_out.saturating_sub(b.fee);
@@ -173,8 +173,8 @@ fn generate_fill(intent: &Intent, bid: &SolverBid) -> Fill {
     Fill::new(
         intent.id,
         bid.solver_id.clone(),
-        bid.amount_out,
-        intent.amount_in,
+        bid.amount_out as u64,
+        intent.amount_in as u64,
         String::new(),
     )
 }

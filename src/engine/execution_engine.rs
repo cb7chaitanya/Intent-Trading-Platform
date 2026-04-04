@@ -86,17 +86,14 @@ async fn execute_intent(
         "trade_execution_started"
     );
 
-    // Create execution record in Pending state
     let mut execution = Execution::new(intent_id, solver_id, tx_hash);
 
-    // Transition to Executing
     execution.status = ExecutionStatus::Executing;
-    storage.insert_execution(execution.clone());
+    let _ = storage.insert_execution(&execution).await;
 
-    // Update intent status
-    if let Some(mut intent) = storage.get_intent(&intent_id) {
+    if let Some(mut intent) = storage.get_intent(&intent_id).await {
         intent.status = IntentStatus::Executing;
-        storage.update_intent(intent);
+        let _ = storage.update_intent(&intent).await;
     }
 
     event_bus
@@ -105,16 +102,14 @@ async fn execute_intent(
         .publish(&Event::ExecutionStarted(execution.clone()))
         .await?;
 
-    // Simulate execution time
     tokio::time::sleep(tokio::time::Duration::from_secs(execution_duration_secs)).await;
 
-    // Mark completed
     execution.status = ExecutionStatus::Completed;
-    storage.update_execution(execution.clone());
+    let _ = storage.update_execution(&execution).await;
 
-    if let Some(mut intent) = storage.get_intent(&intent_id) {
+    if let Some(mut intent) = storage.get_intent(&intent_id).await {
         intent.status = IntentStatus::Completed;
-        storage.update_intent(intent);
+        let _ = storage.update_intent(&intent).await;
     }
 
     let execution_id = execution.id;

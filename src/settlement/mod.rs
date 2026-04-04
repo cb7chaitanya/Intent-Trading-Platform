@@ -2,6 +2,7 @@ pub mod engine;
 pub mod handler;
 pub mod model;
 pub mod retry;
+pub mod worker;
 
 use std::sync::Arc;
 

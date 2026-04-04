@@ -120,6 +120,15 @@ impl IntentService {
 
         counters::INTENTS_TOTAL.inc();
 
+        tracing::info!(
+            intent_id = %intent.id,
+            user_id = %intent.user_id,
+            token_in = %intent.token_in,
+            token_out = %intent.token_out,
+            amount_in = intent.amount_in,
+            "intent_created"
+        );
+
         Ok(intent)
     }
 

@@ -46,14 +46,14 @@ impl WsServer {
         let mut pubsub = match redis_client.get_async_pubsub().await {
             Ok(ps) => ps,
             Err(e) => {
-                eprintln!("Failed to connect to Redis for WS listener: {e}");
+                tracing::error!(error = %e, "Failed to connect to Redis for WS listener");
                 return;
             }
         };
 
         for channel in WS_CHANNELS {
             if let Err(e) = pubsub.subscribe(*channel).await {
-                eprintln!("Failed to subscribe to {channel}: {e}");
+                tracing::error!(channel = %channel, error = %e, "Failed to subscribe WS channel");
                 return;
             }
         }
@@ -66,7 +66,7 @@ impl WsServer {
             let payload: String = match msg.get_payload() {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("Failed to read WS message payload: {e}");
+                    tracing::warn!(error = %e, "Failed to read WS message payload");
                     continue;
                 }
             };
@@ -80,7 +80,7 @@ impl WsServer {
                     let _ = tx.send(ws_message.to_string());
                 }
                 Err(e) => {
-                    eprintln!("Failed to deserialize event on {channel}: {e}");
+                    tracing::warn!(channel = %channel, error = %e, "Failed to deserialize WS event");
                 }
             }
         }

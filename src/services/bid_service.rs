@@ -40,6 +40,15 @@ impl BidService {
 
         counters::BIDS_TOTAL.inc();
 
+        tracing::info!(
+            bid_id = %bid.id,
+            intent_id = %bid.intent_id,
+            solver_id = %bid.solver_id,
+            amount_out = bid.amount_out,
+            fee = bid.fee,
+            "bid_submitted"
+        );
+
         Ok(bid)
     }
 

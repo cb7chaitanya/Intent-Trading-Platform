@@ -96,6 +96,7 @@ impl SettlementEngine {
     }
 
     pub async fn settle_trade(&self, trade_id: Uuid) -> Result<Trade, SettlementError> {
+        tracing::info!(trade_id = %trade_id, "settlement_started");
         let settle_start = std::time::Instant::now();
         let mut tx = self.pool.begin().await?;
 
@@ -166,8 +167,15 @@ impl SettlementEngine {
 
         tx.commit().await?;
 
+        let duration_ms = settle_start.elapsed().as_secs_f64() * 1000.0;
         counters::SETTLEMENT_SUCCESS_TOTAL.inc();
         histograms::SETTLEMENT_DURATION.observe(settle_start.elapsed().as_secs_f64());
+
+        tracing::info!(
+            trade_id = %trade_id,
+            duration_ms = duration_ms,
+            "settlement_success"
+        );
 
         Ok(Trade {
             status: TradeStatus::Settled,

@@ -112,7 +112,7 @@ impl EventBus {
 
             match serde_json::from_str::<Event>(&payload) {
                 Ok(event) => handler(channel, event).await,
-                Err(e) => eprintln!("Failed to deserialize event on {channel}: {e}"),
+                Err(e) => tracing::warn!(channel = %channel, error = %e, "Failed to deserialize event"),
             }
         }
 

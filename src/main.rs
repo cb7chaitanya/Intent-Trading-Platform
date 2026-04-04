@@ -13,6 +13,7 @@ mod market_data;
 mod markets;
 mod metrics;
 mod models;
+mod oracle;
 mod risk;
 mod services;
 mod settlement;
@@ -141,10 +142,17 @@ async fn main() {
     let ws_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for WsServer");
     let expiry_bus = EventBus::new(&cfg.redis_url).await.expect("Failed to connect Redis for ExpiryWorker");
 
+    // Oracle service
+    let oracle_service = Arc::new(oracle::service::OracleService::new(
+        health_pool.clone(),
+        Arc::clone(&market_service),
+    ));
+
     // Risk engine
     let risk_engine = Arc::new(RiskEngine::new(
         Arc::clone(&balance_service),
         Arc::clone(&market_service),
+        Arc::clone(&oracle_service),
     ));
 
     // Redis Streams event bus
@@ -184,6 +192,13 @@ async fn main() {
     let ws_feed = Arc::clone(&stream_consumer_feed);
 
     let mut bg_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // Background task: oracle price feed
+    let oracle_worker = Arc::clone(&oracle_service);
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        oracle_worker.run_price_feed(token).await;
+    }));
 
     // Background task: stream consumer → WS forwarder
     let token = shutdown.token();
@@ -306,7 +321,8 @@ async fn main() {
         .merge(solver_reputation::router(solver_service))
         .merge(ws_server.router())
         .merge(ws::router(ws_feed))
-        .merge(metrics::router());
+        .merge(metrics::router())
+        .merge(oracle::router(oracle_service));
 
     let app = protected.merge(public);
 

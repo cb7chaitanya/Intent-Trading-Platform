@@ -16,7 +16,10 @@ pub async fn submit_solver_bid(
 ) {
     let (amount_out, fee) = {
         let mut rng = rand::rng();
-        (rng.random_range(100u64..15_000), rng.random_range(1u64..50))
+        (
+            rng.random_range(100u64..15_000),
+            rng.random_range(1u64..50),
+        )
     };
     let solver_id = format!("solver-{solver_index}");
 
@@ -39,14 +42,11 @@ pub async fn submit_solver_bid(
         Ok(r) if r.status().is_success() => {
             metrics.bids_sent.fetch_add(1, Ordering::Relaxed);
         }
-        Ok(r) => {
+        Ok(_) => {
             metrics.bids_failed.fetch_add(1, Ordering::Relaxed);
-            let body = r.text().await.unwrap_or_default();
-            eprintln!("  Bid failed: {body}");
         }
-        Err(e) => {
+        Err(_) => {
             metrics.bids_failed.fetch_add(1, Ordering::Relaxed);
-            eprintln!("  Bid error: {e}");
         }
     }
 }

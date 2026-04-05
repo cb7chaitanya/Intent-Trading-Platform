@@ -12,6 +12,8 @@ const TOKENS: &[(&str, &str)] = &[
     ("ETH", "USDC"),
     ("BTC", "USDC"),
     ("SOL", "USDC"),
+    ("USDC", "ETH"),
+    ("USDC", "BTC"),
 ];
 
 pub async fn submit_random_intent(
@@ -24,7 +26,7 @@ pub async fn submit_random_intent(
         let mut rng = rand::rng();
         let pair = TOKENS[rng.random_range(0..TOKENS.len())];
         let amt: u64 = rng.random_range(100..10_000);
-        let min_out: u64 = (amt as f64 * rng.random_range(0.9..1.1)) as u64;
+        let min_out: u64 = (amt as f64 * rng.random_range(0.85..1.05)) as u64;
         (pair.0, pair.1, amt, min_out)
     };
     let deadline = chrono::Utc::now().timestamp() + 3600;
@@ -32,6 +34,7 @@ pub async fn submit_random_intent(
     let start = Instant::now();
     let resp = client
         .post(format!("{base_url}/intents"))
+        .header("Authorization", format!("Bearer {}", user.token))
         .json(&serde_json::json!({
             "user_id": user.user_id,
             "account_id": user.account_id,
@@ -57,7 +60,10 @@ pub async fn submit_random_intent(
             metrics.intents_failed.fetch_add(1, Ordering::Relaxed);
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
-            eprintln!("  Intent failed: {status} {body}");
+            if status.as_u16() != 400 {
+                // Only log unexpected errors (400 = insufficient balance, expected)
+                eprintln!("  Intent failed: {status} {body}");
+            }
             None
         }
         Err(e) => {

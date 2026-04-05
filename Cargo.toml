@@ -54,6 +54,8 @@ async-trait = "0.1"
 aes-gcm = "0.10"
 k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
 elliptic-curve = { version = "0.13", features = ["sec1"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+curve25519-dalek = { version = "4", features = ["digest"] }
 
 [dev-dependencies]
 testcontainers = "0.27"

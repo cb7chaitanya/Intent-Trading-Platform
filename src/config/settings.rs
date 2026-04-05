@@ -58,6 +58,15 @@ pub struct Settings {
 
     #[serde(default = "default_internal_signing_secret")]
     pub internal_signing_secret: String,
+
+    #[serde(default = "default_rpc_endpoint")]
+    pub rpc_endpoint: String,
+
+    #[serde(default = "default_chain_id")]
+    pub chain_id: u64,
+
+    #[serde(default = "default_wallet_master_key")]
+    pub wallet_master_key: String,
 }
 
 fn default_database_url() -> String {
@@ -116,4 +125,15 @@ fn default_partition_retention_months() -> i32 {
 }
 fn default_internal_signing_secret() -> String {
     "change-me-internal-signing-secret".to_string()
+}
+fn default_rpc_endpoint() -> String {
+    "http://127.0.0.1:8545".to_string()
+}
+fn default_chain_id() -> u64 {
+    1 // Ethereum mainnet; override for testnets
+}
+fn default_wallet_master_key() -> String {
+    // 32-byte hex key for AES-256-GCM encryption of wallet private keys.
+    // MUST be overridden in production via environment variable.
+    "0000000000000000000000000000000000000000000000000000000000000000".to_string()
 }

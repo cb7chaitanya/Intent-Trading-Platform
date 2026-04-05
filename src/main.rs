@@ -26,6 +26,7 @@ mod shutdown;
 mod solver_reputation;
 mod twap;
 mod users;
+mod wallet;
 mod workers;
 mod ws;
 
@@ -163,6 +164,23 @@ async fn main() {
 
     // Settlement engine
     let settlement_engine = Arc::new(SettlementEngine::new(pg_pool.clone()));
+
+    // Wallet service
+    let wallet_master_key: [u8; 32] = {
+        let hex_key = &cfg.wallet_master_key;
+        let mut key = [0u8; 32];
+        if let Ok(bytes) = hex::decode(hex_key) {
+            if bytes.len() == 32 {
+                key.copy_from_slice(&bytes);
+            }
+        }
+        key
+    };
+    let rpc_client = Arc::new(wallet::rpc::RpcClient::new(&cfg.rpc_endpoint, cfg.chain_id));
+    let wallet_repo = wallet::repository::WalletRepository::new(pg_pool.clone());
+    let wallet_service = Arc::new(wallet::service::WalletService::new(
+        wallet_repo, Arc::clone(&rpc_client), wallet_master_key,
+    ));
 
     // User service
     let user_repo = UserRepository::new(pg_pool.clone());
@@ -407,6 +425,13 @@ async fn main() {
         workers::stop_order_monitor::run(stop_pool, stop_oracle, stop_event_bus, token).await;
     }));
 
+    // Background task: blockchain transaction confirmation worker
+    let confirmation_wallet_svc = Arc::clone(&wallet_service);
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        wallet::confirmation::run(confirmation_wallet_svc, token).await;
+    }));
+
     // Internal request signature verification (only enforce in production)
     let signature_layer = if cfg.environment == "production" || cfg.environment == "docker" {
         Some(
@@ -439,6 +464,7 @@ async fn main() {
         .merge(settlement::router(settlement_engine))
         .merge(twap::router(twap_service))
         .merge(solver_reputation::protected_router(Arc::clone(&solver_service)))
+        .merge(wallet::router(Arc::clone(&wallet_service)))
         .layer(csrf::middleware::CsrfLayer::new(Arc::clone(&csrf_state)))
         .layer(idempotency::IdempotencyLayer::new(idempotency_pool))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));

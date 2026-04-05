@@ -7,6 +7,7 @@ import {
   Wallet,
   Trophy,
   History,
+  Layers,
   ChevronLeft,
 } from "lucide-react";
 
@@ -18,6 +19,7 @@ interface SidebarProps {
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/markets", label: "Markets", icon: BarChart3 },
+  { href: "/twap", label: "TWAP", icon: Layers },
   { href: "/history", label: "History", icon: History },
   { href: "/account", label: "Account", icon: Wallet },
   { href: "/leaderboard", label: "Leaderboard", icon: Trophy },

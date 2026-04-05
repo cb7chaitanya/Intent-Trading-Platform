@@ -221,6 +221,48 @@ groups:
           description: "The oracle worker may be stuck. Check logs."
 
   # ================================================================
+  # Backups
+  # ================================================================
+  - name: backups
+    rules:
+      - alert: BackupStale
+        expr: >
+          (time() - backup_last_success_timestamp) > 90000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No successful backup in 25+ hours"
+          description: "Last backup was {{ $value | humanizeDuration }} ago. Check pg-backup container logs."
+
+      - alert: BackupFailed
+        expr: backup_last_status == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Last database backup failed"
+          description: "Check /var/log/backup.log in the pg-backup container."
+
+      - alert: BackupVerificationFailed
+        expr: backup_verify_success == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup verification failed"
+          description: "The latest backup could not be test-restored. Investigate immediately."
+
+      - alert: BackupTooSmall
+        expr: backup_last_size_bytes < 10240
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup file suspiciously small ({{ $value }} bytes)"
+          description: "May indicate an incomplete dump."
+
+  # ================================================================
   # Disk
   # ================================================================
   - name: disk

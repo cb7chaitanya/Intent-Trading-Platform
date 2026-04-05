@@ -10,6 +10,17 @@ services:
       POSTGRES_DB: intent_trading
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/backup/wal-archive.sh:/scripts/wal-archive.sh:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "archive_mode=on"
+      - "-c"
+      - "archive_command=/scripts/wal-archive.sh %p %f"
+      - "-c"
+      - "archive_timeout=60"
+      - "-c"
+      - "wal_level=replica"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -198,11 +209,14 @@ services:
       S3_ENDPOINT: http://minio:9000
       S3_PREFIX: daily
       RETENTION_DAYS: "30"
+      WAL_RETENTION_DAYS: "7"
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
+      PUSHGATEWAY_URL: ""
     depends_on:
       postgres:
         condition: service_healthy
+    restart: unless-stopped
     profiles:
       - production
 

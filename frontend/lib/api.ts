@@ -124,6 +124,49 @@ export const getAccounts = (userId: string) =>
 export const createAccount = (data: { user_id: string }) =>
   api.post("/accounts", data).then((r) => r.data);
 
+// Amend Intent
+export const amendIntent = (
+  id: string,
+  data: {
+    account_id: string;
+    amount_in?: number;
+    min_amount_out?: number;
+    limit_price?: number;
+  }
+) => api.put(`/intents/${id}/amend`, data).then((r) => r.data);
+
+// Cancel Intent (set status to cancelled)
+export const cancelIntent = (id: string) =>
+  api.post(`/intents/${id}/cancel`).then((r) => r.data);
+
+// TWAP
+export const createTwap = (data: {
+  user_id: string;
+  account_id: string;
+  token_in: string;
+  token_out: string;
+  total_qty: number;
+  min_price: number;
+  duration_secs: number;
+  interval_secs: number;
+}) => api.post("/twap", data).then((r) => r.data);
+
+export const getTwapProgress = (twapId: string) =>
+  api.get(`/twap/${twapId}`).then((r) => r.data);
+
+export const getActiveTwaps = () =>
+  api.get("/twap/active").then((r) => r.data);
+
+export const cancelTwap = (twapId: string) =>
+  api.post(`/twap/${twapId}/cancel`).then((r) => r.data);
+
+// Oracle
+export const getOraclePrices = () =>
+  api.get("/oracle/prices").then((r) => r.data);
+
+export const getOraclePrice = (marketId: string) =>
+  api.get(`/oracle/prices/${marketId}`).then((r) => r.data);
+
 // Solvers
 export const getTopSolvers = (limit = 10) =>
   api.get("/solvers/top", { params: { limit } }).then((r) => r.data);

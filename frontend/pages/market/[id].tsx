@@ -1,11 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/router";
-import { getMarket, getIntents } from "@/lib/api";
+import { Wifi, WifiOff } from "lucide-react";
+import { getMarket, getOraclePrice } from "@/lib/api";
 import { useWebSocket } from "@/contexts/WebSocketProvider";
-import OrderBook from "@/components/OrderBook";
-import TradeFeed from "@/components/TradeFeed";
-import IntentForm from "@/components/IntentForm";
-import CandlestickChart from "@/components/charts/CandlestickChart";
+import MarketSelector from "@/components/market-selector/MarketSelector";
+import CandlestickChart from "@/components/chart/CandlestickChart";
+import OrderBook from "@/components/orderbook/OrderBook";
+import TradeFeed from "@/components/trade-feed/TradeFeed";
+import IntentForm from "@/components/intent-form/IntentForm";
+import BalancesPanel from "@/components/balances/BalancesPanel";
+import OpenOrders from "@/components/open-orders/OpenOrders";
 
 interface Market {
   id: string;
@@ -16,34 +20,14 @@ interface Market {
   fee_rate: number;
 }
 
-interface Intent {
-  id: string;
-  user_id: string;
-  token_in: string;
-  token_out: string;
-  amount_in: number;
-  min_amount_out: number;
-  status: string;
-  created_at: number;
-}
-
-const STATUS_BADGE: Record<string, string> = {
-  Open: "badge-info",
-  Bidding: "badge-warning",
-  Matched: "badge-success",
-  Executing: "bg-purple-500/10 text-purple-400",
-  Completed: "badge-success",
-  Failed: "badge-danger",
-  Cancelled: "bg-surface-3 text-[var(--text-muted)]",
-};
-
-export default function MarketPage() {
+export default function TradingPage() {
   const router = useRouter();
   const { id } = router.query;
   const marketId = id as string;
 
   const [market, setMarket] = useState<Market | null>(null);
-  const [intents, setIntents] = useState<Intent[]>([]);
+  const [oraclePrice, setOraclePrice] = useState<number | null>(null);
+  const [selectedPrice, setSelectedPrice] = useState<number | undefined>();
   const { subscribe, unsubscribe, connected } = useWebSocket();
 
   useEffect(() => {
@@ -51,8 +35,8 @@ export default function MarketPage() {
     getMarket(marketId)
       .then(setMarket)
       .catch(() => {});
-    getIntents()
-      .then((data) => setIntents(data || []))
+    getOraclePrice(marketId)
+      .then((data) => setOraclePrice(data?.price ?? null))
       .catch(() => {});
   }, [marketId]);
 
@@ -62,98 +46,136 @@ export default function MarketPage() {
     return () => unsubscribe(marketId);
   }, [marketId, connected, subscribe, unsubscribe]);
 
+  // Refresh oracle price periodically
+  useEffect(() => {
+    if (!marketId) return;
+    const interval = setInterval(() => {
+      getOraclePrice(marketId)
+        .then((data) => setOraclePrice(data?.price ?? null))
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [marketId]);
+
+  const handlePriceClick = useCallback((price: number) => {
+    setSelectedPrice(price);
+  }, []);
+
+  const handleOrderPlaced = useCallback(() => {
+    // OpenOrders component will refresh via its own listener
+  }, []);
+
   if (!marketId) return null;
 
-  const openIntents = intents.filter(
-    (i) => i.status !== "Completed" && i.status !== "Cancelled"
-  );
-
   return (
-    <div className="space-y-6 max-w-7xl mx-auto animate-fade-in">
-      {/* Market header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">
-            {market
-              ? `${market.base_asset}/${market.quote_asset}`
-              : "Loading..."}
-          </h1>
-          {market && (
-            <p className="text-sm text-[var(--text-muted)] mt-0.5">
-              Tick {market.tick_size} &middot; Min {market.min_order_size}{" "}
-              &middot; Fee {(market.fee_rate * 100).toFixed(2)}%
-            </p>
-          )}
+    <div className="h-[calc(100vh-3.5rem)] flex flex-col overflow-hidden animate-fade-in -m-6">
+      {/* Market header bar */}
+      <div className="flex items-center justify-between px-4 py-2 border-b bg-surface-1 shrink-0">
+        <div className="flex items-center gap-4">
+          <MarketSelector currentMarketId={marketId} />
+
+          {/* Price stats */}
+          <div className="hidden md:flex items-center gap-6 text-xs">
+            {oraclePrice != null && (
+              <div>
+                <span className="text-[var(--text-muted)] mr-1">Oracle</span>
+                <span className="font-mono font-medium text-brand-400">
+                  {oraclePrice.toLocaleString()}
+                </span>
+              </div>
+            )}
+            {market && (
+              <>
+                <div>
+                  <span className="text-[var(--text-muted)] mr-1">
+                    Tick Size
+                  </span>
+                  <span className="font-mono">{market.tick_size}</span>
+                </div>
+                <div>
+                  <span className="text-[var(--text-muted)] mr-1">
+                    Min Size
+                  </span>
+                  <span className="font-mono">{market.min_order_size}</span>
+                </div>
+                <div>
+                  <span className="text-[var(--text-muted)] mr-1">Fee</span>
+                  <span className="font-mono">
+                    {(market.fee_rate * 100).toFixed(2)}%
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className={`badge ${connected ? "badge-success" : "badge-danger"}`}>
-            {connected ? "Live" : "Offline"}
+
+        {/* Connection status */}
+        <div className="flex items-center gap-1.5">
+          {connected ? (
+            <Wifi size={14} className="text-up" />
+          ) : (
+            <WifiOff size={14} className="text-down" />
+          )}
+          <span
+            className={`text-[10px] font-medium ${
+              connected ? "text-up" : "text-down"
+            }`}
+          >
+            {connected ? "LIVE" : "OFFLINE"}
           </span>
         </div>
       </div>
 
-      {/* Chart */}
-      <CandlestickChart marketId={marketId} />
-
-      {/* Main grid: OrderBook + Trades | Intent Form + Open Intents */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: OrderBook + Trades */}
-        <div className="lg:col-span-4 space-y-4">
-          <OrderBook marketId={marketId} />
-        </div>
-
-        <div className="lg:col-span-4 space-y-4">
-          <TradeFeed marketId={marketId} />
-        </div>
-
-        {/* Right: Intent Form + Open Intents */}
-        <div className="lg:col-span-4 space-y-4">
-          <IntentForm
+      {/* Main grid */}
+      <div className="flex-1 min-h-0 grid grid-cols-12 grid-rows-[1fr_auto]">
+        {/* Left: Order Book */}
+        <div className="col-span-3 xl:col-span-2 border-r overflow-hidden">
+          <OrderBook
             marketId={marketId}
-            balances={{}}
-            baseAsset={market?.base_asset}
-            quoteAsset={market?.quote_asset}
-            tickSize={market?.tick_size}
-            minOrderSize={market?.min_order_size}
+            onPriceClick={handlePriceClick}
           />
+        </div>
 
-          <div className="card space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold">Open Intents</h3>
-              <span className="badge badge-info">{openIntents.length}</span>
-            </div>
-
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {openIntents.map((intent) => (
-                <div
-                  key={intent.id}
-                  className="rounded-lg bg-surface-2 p-3 space-y-1 animate-slide-up"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium">
-                      {intent.token_in} &rarr; {intent.token_out}
-                    </span>
-                    <span
-                      className={`badge ${STATUS_BADGE[intent.status] || "badge-info"}`}
-                    >
-                      {intent.status}
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-xs text-[var(--text-muted)]">
-                    <span>In: {intent.amount_in.toLocaleString()}</span>
-                    <span>
-                      Min Out: {intent.min_amount_out.toLocaleString()}
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {openIntents.length === 0 && (
-                <p className="text-center text-sm text-[var(--text-muted)] py-6">
-                  No open intents
-                </p>
-              )}
-            </div>
+        {/* Center: Chart + Open Orders */}
+        <div className="col-span-6 xl:col-span-7 flex flex-col overflow-hidden">
+          {/* Chart */}
+          <div className="flex-1 min-h-0">
+            <CandlestickChart marketId={marketId} />
           </div>
+
+          {/* Trade feed (horizontal below chart) */}
+          <div className="h-48 border-t overflow-hidden">
+            <TradeFeed
+              marketId={marketId}
+              onPriceClick={handlePriceClick}
+            />
+          </div>
+        </div>
+
+        {/* Right: Intent Form + Balances */}
+        <div className="col-span-3 border-l flex flex-col overflow-hidden">
+          {/* Intent form */}
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <IntentForm
+              marketId={marketId}
+              baseAsset={market?.base_asset}
+              quoteAsset={market?.quote_asset}
+              tickSize={market?.tick_size}
+              minOrderSize={market?.min_order_size}
+              onOrderPlaced={handleOrderPlaced}
+              initialPrice={selectedPrice}
+            />
+          </div>
+
+          {/* Balances */}
+          <div className="shrink-0 border-t">
+            <BalancesPanel />
+          </div>
+        </div>
+
+        {/* Bottom: Open Orders / History (full width) */}
+        <div className="col-span-12 border-t max-h-56 overflow-hidden">
+          <OpenOrders marketId={marketId} />
         </div>
       </div>
     </div>

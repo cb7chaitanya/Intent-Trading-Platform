@@ -1,16 +1,25 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-Dwarnings"
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository }}
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
+  # ── Lint ────────────────────────────────────────────────
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -32,6 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features
 
+  # ── Unit Tests ──────────────────────────────────────────
   test-unit:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -39,18 +49,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --bin intent-trading --bin api-gateway --bin solver-bot --bin load-test
+      - run: cargo test --lib --bins
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [fmt, clippy, test-unit]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
-
+  # ── Integration Tests (Postgres + Redis) ────────────────
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -86,12 +87,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run integration tests
-        run: cargo test --features integration --test integration_test
+        run: cargo test --features integration --test integration_test --test infra_integration_test
 
+  # ── E2E Tests ───────────────────────────────────────────
   test-e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [test-unit]
     services:
       postgres:
         image: postgres:16-alpine
@@ -136,3 +138,60 @@ jobs:
           done
       - name: Run E2E tests
         run: E2E_BASE_URL=http://localhost:3000 cargo test --test e2e_test --features e2e -- --test-threads=1
+
+  # ── Docker Build (verify images build) ──────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build intent-trading image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: intent-trading
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/intent-trading:pr-${{ github.event.pull_request.number }}
+
+      - name: Build api-gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api-gateway
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/api-gateway:pr-${{ github.event.pull_request.number }}
+
+      - name: Build solver-bot image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: solver-bot
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/solver-bot:pr-${{ github.event.pull_request.number }}
+
+  # ── Frontend ────────────────────────────────────────────
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npx next build

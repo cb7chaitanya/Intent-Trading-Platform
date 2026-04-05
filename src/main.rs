@@ -438,6 +438,7 @@ async fn main() {
         .merge(ledger::router(ledger_service))
         .merge(settlement::router(settlement_engine))
         .merge(twap::router(twap_service))
+        .merge(solver_reputation::protected_router(Arc::clone(&solver_service)))
         .layer(csrf::middleware::CsrfLayer::new(Arc::clone(&csrf_state)))
         .layer(idempotency::IdempotencyLayer::new(idempotency_pool))
         .layer(axum::middleware::from_fn(auth::middleware::require_auth));

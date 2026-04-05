@@ -140,6 +140,10 @@ async fn process_event(
                 "fill_auto_settlement_failed"
             );
             let _ = retry::record_fill_failure(pool, event.fill_id, &e.to_string()).await;
+            // Track failure in solver stats
+            if let Ok(sid) = event.solver_id.parse::<uuid::Uuid>() {
+                let _ = crate::solver_reputation::stats::record_failed_fill(pool, sid).await;
+            }
             return;
         }
     }

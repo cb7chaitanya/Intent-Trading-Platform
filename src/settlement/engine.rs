@@ -210,6 +210,22 @@ impl SettlementEngine {
         counters::TRADES_TOTAL.inc();
         histograms::SETTLEMENT_DURATION.observe(settle_start.elapsed().as_secs_f64());
 
+        // Update solver performance stats
+        if let Ok(sid) = fill.solver_id.parse::<Uuid>() {
+            let latency_ms = duration_ms as i64;
+            // Slippage: difference between bid price and fill price in basis points
+            let slippage_bps = if fill.price > 0 {
+                ((fill.qty - fill.filled_qty).abs() * 10_000) / fill.price
+            } else {
+                0
+            };
+            if let Err(e) = crate::solver_reputation::stats::record_settled_fill(
+                &self.pool, sid, fill.filled_qty, solver_fee, latency_ms, slippage_bps,
+            ).await {
+                tracing::warn!(solver_id = %fill.solver_id, error = %e, "solver_stats_update_failed");
+            }
+        }
+
         tracing::info!(fill_id = %fill_id, intent_id = %fill.intent_id, duration_ms, "settle_fill_success");
         Ok(())
     }

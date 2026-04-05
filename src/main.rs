@@ -204,6 +204,7 @@ async fn main() {
     let oracle_service = Arc::new(oracle::service::OracleService::new(
         health_pool.clone(),
         Arc::clone(&market_service),
+        &cfg.redis_url,
     ));
 
     // Risk engine

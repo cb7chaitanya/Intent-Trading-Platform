@@ -1,9 +1,13 @@
+pub mod chain;
+pub mod confirmation;
+pub mod ethereum;
 pub mod model;
+pub mod registry;
 pub mod repository;
-pub mod signing;
 pub mod rpc;
 pub mod service;
-pub mod confirmation;
+pub mod signing;
+pub mod solana;
 
 use std::sync::Arc;
 

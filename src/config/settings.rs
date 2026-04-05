@@ -67,6 +67,9 @@ pub struct Settings {
 
     #[serde(default = "default_wallet_master_key")]
     pub wallet_master_key: String,
+
+    #[serde(default = "default_solana_rpc_endpoint")]
+    pub solana_rpc_endpoint: String,
 }
 
 fn default_database_url() -> String {
@@ -136,4 +139,7 @@ fn default_wallet_master_key() -> String {
     // 32-byte hex key for AES-256-GCM encryption of wallet private keys.
     // MUST be overridden in production via environment variable.
     "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+}
+fn default_solana_rpc_endpoint() -> String {
+    "https://api.devnet.solana.com".to_string()
 }

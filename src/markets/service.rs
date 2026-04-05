@@ -52,6 +52,7 @@ impl MarketService {
             tick_size: req.tick_size,
             min_order_size: req.min_order_size,
             fee_rate: req.fee_rate,
+            chain: req.chain.unwrap_or_else(|| "ethereum".to_string()),
             created_at: Utc::now(),
         };
         self.repo.insert(&market).await?;

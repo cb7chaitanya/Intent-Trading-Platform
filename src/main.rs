@@ -177,9 +177,21 @@ async fn main() {
         key
     };
     let rpc_client = Arc::new(wallet::rpc::RpcClient::new(&cfg.rpc_endpoint, cfg.chain_id));
+
+    // Multi-chain adapter registry
+    let mut chain_registry = wallet::registry::ChainRegistry::new();
+    chain_registry.register(Arc::new(
+        wallet::ethereum::EthereumAdapter::new(&cfg.rpc_endpoint, cfg.chain_id),
+    ));
+    chain_registry.register(Arc::new(
+        wallet::solana::SolanaAdapter::new(&cfg.solana_rpc_endpoint),
+    ));
+    let chain_registry = Arc::new(chain_registry);
+    tracing::info!(chains = ?chain_registry.chains(), "Chain adapters registered");
+
     let wallet_repo = wallet::repository::WalletRepository::new(pg_pool.clone());
     let wallet_service = Arc::new(wallet::service::WalletService::new(
-        wallet_repo, Arc::clone(&rpc_client), wallet_master_key,
+        wallet_repo, Arc::clone(&rpc_client), Arc::clone(&chain_registry), wallet_master_key,
     ));
 
     // User service

@@ -2,32 +2,20 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use super::chain::TxState;
 use super::model::TxStatus;
 use super::service::WalletService;
-
-/// Required number of block confirmations before finalizing.
-const REQUIRED_CONFIRMATIONS: i32 = 12;
 
 /// Poll interval for checking transaction status.
 const POLL_INTERVAL_SECS: u64 = 5;
 
 /// Background worker that polls submitted transactions for confirmations.
-///
-/// Flow:
-/// 1. Fetch all transactions with status `submitted`
-/// 2. For each, call `eth_getTransactionReceipt` via RPC
-/// 3. If receipt exists: update block_number, gas_used, confirmations
-/// 4. If confirmations >= REQUIRED_CONFIRMATIONS: mark `confirmed`
-/// 5. If receipt shows failure: mark `failed`
-/// 6. Sleep and repeat
-pub async fn run(
-    wallet_service: Arc<WalletService>,
-    cancel: CancellationToken,
-) {
+/// Supports multiple chains by routing each transaction through its
+/// chain's adapter from the ChainRegistry.
+pub async fn run(wallet_service: Arc<WalletService>, cancel: CancellationToken) {
     tracing::info!(
-        required_confirmations = REQUIRED_CONFIRMATIONS,
         poll_secs = POLL_INTERVAL_SECS,
-        "Confirmation worker started"
+        "Multi-chain confirmation worker started"
     );
 
     loop {
@@ -55,14 +43,7 @@ async fn poll_pending(svc: &WalletService) -> Result<(), String> {
         return Ok(());
     }
 
-    let current_block = svc
-        .rpc()
-        .get_block_number()
-        .await
-        .map_err(|e| e.to_string())?;
-
     for tx in &pending {
-        // Only check transactions that have been submitted (have a tx_hash)
         if tx.status != TxStatus::Submitted {
             continue;
         }
@@ -71,37 +52,34 @@ async fn poll_pending(svc: &WalletService) -> Result<(), String> {
             None => continue,
         };
 
-        match svc.rpc().get_transaction_receipt(tx_hash).await {
-            Ok(Some(receipt)) => {
-                if !receipt.status {
-                    // Transaction reverted on-chain
-                    if let Err(e) = svc
-                        .repo()
-                        .update_tx_failed(tx.id, "Transaction reverted on-chain")
-                        .await
-                    {
-                        tracing::warn!(tx_id = %tx.id, error = %e, "failed_to_mark_tx_failed");
-                    }
-                    tracing::warn!(
-                        tx_id = %tx.id,
-                        tx_hash = %tx_hash,
-                        "tx_reverted_on_chain"
-                    );
-                    continue;
-                }
+        // Route to the correct chain adapter
+        let adapter = match svc.chains().get(&tx.chain) {
+            Ok(a) => a,
+            Err(_) => {
+                tracing::warn!(
+                    tx_id = %tx.id,
+                    chain = %tx.chain,
+                    "no_adapter_for_chain_skipping"
+                );
+                continue;
+            }
+        };
 
-                let confirmations =
-                    (current_block - receipt.block_number).max(0) as i32;
+        let required_confirmations = adapter.required_confirmations();
 
-                if confirmations >= REQUIRED_CONFIRMATIONS {
-                    // Fully confirmed
+        match adapter.get_transaction_status(tx_hash).await {
+            Ok(TxState::Confirmed {
+                block,
+                confirmations,
+            }) => {
+                if confirmations >= required_confirmations {
                     if let Err(e) = svc
                         .repo()
                         .update_tx_confirmed(
                             tx.id,
-                            receipt.block_number,
-                            receipt.gas_used,
-                            confirmations,
+                            block as i64,
+                            tx.gas_used.unwrap_or(0),
+                            confirmations as i32,
                         )
                         .await
                     {
@@ -109,32 +87,45 @@ async fn poll_pending(svc: &WalletService) -> Result<(), String> {
                     } else {
                         tracing::info!(
                             tx_id = %tx.id,
+                            chain = %tx.chain,
                             tx_hash = %tx_hash,
-                            block = receipt.block_number,
+                            block,
                             confirmations,
                             "tx_confirmed"
                         );
                     }
                 } else {
-                    // Partially confirmed — update count
                     let _ = svc
                         .repo()
-                        .increment_confirmations(tx.id, confirmations)
+                        .increment_confirmations(tx.id, confirmations as i32)
                         .await;
                 }
             }
-            Ok(None) => {
-                // Not yet mined — check if too old (dropped)
+            Ok(TxState::Failed { reason }) => {
+                let _ = svc.repo().update_tx_failed(tx.id, &reason).await;
+                tracing::warn!(
+                    tx_id = %tx.id,
+                    chain = %tx.chain,
+                    tx_hash = %tx_hash,
+                    reason = %reason,
+                    "tx_failed_on_chain"
+                );
+            }
+            Ok(TxState::Pending) => {
+                // Check for dropped transactions
                 if let Some(submitted) = tx.submitted_at {
                     let age_secs = (chrono::Utc::now() - submitted).num_seconds();
                     if age_secs > 600 {
-                        // 10 minutes without receipt → likely dropped
                         let _ = svc
                             .repo()
-                            .update_tx_failed(tx.id, "Transaction dropped (no receipt after 10m)")
+                            .update_tx_failed(
+                                tx.id,
+                                "Transaction dropped (no receipt after 10m)",
+                            )
                             .await;
                         tracing::warn!(
                             tx_id = %tx.id,
+                            chain = %tx.chain,
                             tx_hash = %tx_hash,
                             age_secs,
                             "tx_likely_dropped"
@@ -145,9 +136,10 @@ async fn poll_pending(svc: &WalletService) -> Result<(), String> {
             Err(e) => {
                 tracing::warn!(
                     tx_id = %tx.id,
+                    chain = %tx.chain,
                     tx_hash = %tx_hash,
                     error = %e,
-                    "receipt_fetch_failed"
+                    "status_check_failed"
                 );
             }
         }

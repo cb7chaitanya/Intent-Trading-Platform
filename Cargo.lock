@@ -1533,6 +1533,7 @@ name = "intent-trading"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "async-trait",
  "axum",
  "bcrypt",
  "chrono",

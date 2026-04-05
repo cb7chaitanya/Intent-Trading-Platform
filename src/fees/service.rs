@@ -250,6 +250,7 @@ mod tests {
             tick_size: 1,
             min_order_size: 1,
             fee_rate,
+            chain: "ethereum".to_string(),
             created_at: Utc::now(),
         }
     }

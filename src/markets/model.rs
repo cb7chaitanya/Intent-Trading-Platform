@@ -12,6 +12,7 @@ pub struct Market {
     pub tick_size: i64,
     pub min_order_size: i64,
     pub fee_rate: f64,
+    pub chain: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -22,4 +23,5 @@ pub struct CreateMarketRequest {
     pub tick_size: i64,
     pub min_order_size: i64,
     pub fee_rate: f64,
+    pub chain: Option<String>,
 }

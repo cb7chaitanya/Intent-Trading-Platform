@@ -1,10 +1,47 @@
 groups:
   # ================================================================
-  # API & Gateway
+  # API Latency & Error Rate
   # ================================================================
   - name: api
     rules:
-      - alert: HighApiErrorRate
+      # ── Latency ──────────────────────────────────────────
+      - alert: ApiLatencyP95High
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency above 500ms"
+          description: "p95 latency is {{ $value | humanizeDuration }}. Check slow endpoints and DB query times."
+
+      - alert: ApiLatencyP99Critical
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2.0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API p99 latency above 2 seconds"
+          description: "Tail latency critically high. Likely DB contention or settlement backlog."
+
+      - alert: ApiEndpointSlow
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 1.0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Endpoint {{ $labels.endpoint }} p95 latency above 1s"
+
+      # ── Error Rate ───────────────────────────────────────
+      - alert: HighErrorRate5xx
         expr: >
           sum(rate(api_requests_total{status=~"5.."}[5m]))
           / sum(rate(api_requests_total[5m]))
@@ -14,42 +51,137 @@ groups:
           severity: critical
         annotations:
           summary: "API 5xx error rate above 5%"
-          description: "{{ $value | humanizePercentage }} of requests are returning 5xx over the last 5 minutes."
+          description: "{{ $value | humanizePercentage }} of requests returning 5xx over the last 5 minutes."
 
-      - alert: HighApiLatencyP95
-        expr: >
-          histogram_quantile(0.95,
-            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
-          ) > 1.0
-        for: 3m
-        labels:
-          severity: warning
-        annotations:
-          summary: "API p95 latency above 1 second"
-          description: "p95 latency is {{ $value | humanizeDuration }}."
-
-      - alert: HighApiLatencyP99
-        expr: >
-          histogram_quantile(0.99,
-            sum(rate(api_request_duration_seconds_bucket[5m])) by (le)
-          ) > 3.0
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "API p99 latency above 3 seconds"
-
-      - alert: High4xxRate
+      - alert: HighErrorRate4xx
         expr: >
           sum(rate(api_requests_total{status=~"4.."}[5m]))
           / sum(rate(api_requests_total[5m]))
-          > 0.20
+          > 0.25
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "API 4xx error rate above 20%"
-          description: "May indicate client-side issues, bad auth, or rate limiting."
+          summary: "API 4xx error rate above 25%"
+          description: "May indicate auth issues, bad requests, or aggressive rate limiting."
+
+      - alert: ErrorRateSpike
+        expr: >
+          sum(rate(api_requests_total{status=~"5.."}[2m]))
+          > 3 * sum(rate(api_requests_total{status=~"5.."}[30m]))
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "5xx error rate spiked 3x above 30-minute baseline"
+          description: "Sudden increase in server errors. Check recent deployments or infrastructure."
+
+  # ================================================================
+  # Database
+  # ================================================================
+  - name: database
+    rules:
+      - alert: DbQueryLatencyP95High
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
+          ) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database p95 query latency above 50ms"
+          description: "Queries are slowing down. Check for missing indexes or lock contention."
+
+      - alert: DbQueryLatencyP99Critical
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database p99 query latency above 250ms"
+          description: "Severe DB performance degradation. Check pg_stat_activity for long-running queries."
+
+      - alert: DbConnectionsNearLimit
+        expr: >
+          pg_stat_activity_count
+          / pg_settings_max_connections
+          > 0.80
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Database connections at {{ $value | humanizePercentage }} of max"
+          description: "Connection pool exhaustion imminent. Check for connection leaks or increase pool size."
+
+      - alert: DbConnectionsWarning
+        expr: >
+          pg_stat_activity_count
+          / pg_settings_max_connections
+          > 0.60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Database connections at {{ $value | humanizePercentage }} of max"
+
+      - alert: DbSlowQueryOperation
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation)
+          ) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB operation '{{ $labels.operation }}' p95 latency above 100ms"
+
+  # ================================================================
+  # Redis
+  # ================================================================
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is unreachable"
+          description: "Event bus, cache, rate limiting, CSRF tokens, and streams are all affected. Immediate action required."
+
+      - alert: RedisHighMemory
+        expr: >
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis memory usage above 85%"
+          description: "Redis at {{ $value | humanizePercentage }} of maxmemory. May start evicting keys."
+
+      - alert: RedisHighLatency
+        expr: redis_commands_duration_seconds_total / redis_commands_total > 0.01
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis average command latency above 10ms"
+
+      - alert: CacheHitRateLow
+        expr: >
+          sum(rate(cache_hits_total[5m]))
+          / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))
+          < 0.40
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate below 40%"
+          description: "Redis cache may be cold, misconfigured, or undersized. Current: {{ $value | humanizePercentage }}."
 
   # ================================================================
   # Settlement
@@ -65,6 +197,41 @@ groups:
           summary: "{{ $value }} settlement failures in 15 minutes"
           description: "Check failed_settlements table and retry worker logs."
 
+      - alert: SettlementFailureRateHigh
+        expr: >
+          rate(settlement_failures_total[5m])
+          / (rate(settlement_success_total[5m]) + rate(settlement_failures_total[5m]))
+          > 0.10
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Settlement failure rate above 10%"
+          description: "{{ $value | humanizePercentage }} of settlements are failing. Check DB locks and solver accounts."
+
+      - alert: SettlementLatencyP95High
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(settlement_duration_seconds_bucket[5m])) by (le)
+          ) > 2.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Settlement p95 latency above 2.5 seconds"
+
+      - alert: SettlementLatencyP99Critical
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(settlement_duration_seconds_bucket[5m])) by (le)
+          ) > 5.0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Settlement p99 latency above 5 seconds"
+          description: "Extreme settlement delays. Check database transaction locks and retry queue."
+
       - alert: SettlementRetryQueueHigh
         expr: >
           pg_stat_user_tables_n_live_tup{relname="failed_settlements"} > 50
@@ -74,22 +241,64 @@ groups:
         annotations:
           summary: "Settlement retry queue has {{ $value }} pending entries"
 
-      - alert: SettlementLatencyHigh
+      - alert: SettlementRetryQueueCritical
         expr: >
-          histogram_quantile(0.95,
-            sum(rate(settlement_duration_seconds_bucket[5m])) by (le)
-          ) > 5.0
-        for: 3m
+          pg_stat_user_tables_n_live_tup{relname="failed_settlements"} > 200
+        for: 2m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Settlement p95 latency above 5 seconds"
+          summary: "Settlement retry queue critically large ({{ $value }} entries)"
+          description: "Settlements are failing faster than retries can process. Manual intervention likely needed."
 
   # ================================================================
-  # Trading Engine
+  # Trading Engine & Auctions
   # ================================================================
   - name: trading
     rules:
+      - alert: AuctionDurationP95High
+        expr: >
+          histogram_quantile(0.95,
+            sum(rate(auction_duration_seconds_bucket[5m])) by (le)
+          ) > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auction p95 duration above 20 seconds"
+          description: "Auctions are taking too long. May indicate low solver participation."
+
+      - alert: AuctionDurationP99Critical
+        expr: >
+          histogram_quantile(0.99,
+            sum(rate(auction_duration_seconds_bucket[5m])) by (le)
+          ) > 30
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auction p99 duration above 30 seconds"
+
+      - alert: AuctionsStalled
+        expr: >
+          active_auctions > 0
+          and increase(auctions_total[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auctions running but none completing"
+          description: "{{ $value }} active auctions with no completions in 10 minutes. Auction engine may be stuck."
+
+      - alert: NoBidsPerAuction
+        expr: bids_per_auction_latest == 0 and active_auctions > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auctions receiving zero bids"
+          description: "Active auctions have no solver bids. Check solver connectivity."
+
       - alert: MatchingLatencyHigh
         expr: >
           histogram_quantile(0.95,
@@ -101,17 +310,6 @@ groups:
         annotations:
           summary: "Matching engine p95 latency above 500ms"
 
-      - alert: AuctionDurationHigh
-        expr: >
-          histogram_quantile(0.95,
-            sum(rate(auction_duration_seconds_bucket[5m])) by (le)
-          ) > 30
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Auction p95 duration above 30 seconds"
-
       - alert: NoTradesExecuted
         expr: increase(trades_total[30m]) == 0
         for: 30m
@@ -121,79 +319,111 @@ groups:
           summary: "No trades executed in 30 minutes"
           description: "Trading activity has stopped. Check auction and execution engines."
 
-      - alert: CacheHitRateLow
-        expr: >
-          sum(rate(cache_hits_total[5m]))
-          / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))
-          < 0.5
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Cache hit rate below 50%"
-          description: "Redis cache may be cold or misconfigured."
-
-  # ================================================================
-  # Infrastructure — Database
-  # ================================================================
-  - name: database
-    rules:
-      - alert: DbQueryLatencyHigh
+      - alert: TradeExecutionSlow
         expr: >
           histogram_quantile(0.95,
-            sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
-          ) > 0.1
+            sum(rate(trade_execution_duration_seconds_bucket[5m])) by (le)
+          ) > 5.0
         for: 3m
         labels:
           severity: warning
         annotations:
-          summary: "Database p95 query latency above 100ms"
+          summary: "Trade execution p95 above 5 seconds"
 
-      - alert: DbConnectionsNearLimit
+  # ================================================================
+  # WebSocket
+  # ================================================================
+  - name: websocket
+    rules:
+      - alert: WebSocketDisconnectSpike
         expr: >
-          pg_stat_activity_count
-          / pg_settings_max_connections
-          > 0.8
+          deriv(websocket_connections[5m]) < -10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket connections dropping rapidly"
+          description: "Connections decreasing at {{ $value }}/sec. May indicate server instability or network issues."
+
+      - alert: WebSocketConnectionsDrop
+        expr: >
+          websocket_connections < 0.5 * avg_over_time(websocket_connections[1h])
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WebSocket connections dropped to {{ $value }} (below 50% of 1h average)"
+          description: "Mass disconnection event. Check server logs and network."
+
+      - alert: WebSocketConnectionsZero
+        expr: websocket_connections == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No active WebSocket connections for 10 minutes"
+          description: "All clients disconnected. May be expected during maintenance."
+
+  # ================================================================
+  # Oracle
+  # ================================================================
+  - name: oracle
+    rules:
+      - alert: OraclePriceStale
+        expr: >
+          (time() - max by (market_id) (
+            pg_stat_user_tables_last_autoanalyze{relname="market_prices"}
+          )) > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Oracle prices not updated in 30+ seconds"
+          description: "Oracle worker updates every 2 seconds. It may be stuck or all exchanges unreachable."
+
+      - alert: OraclePriceCriticallyStale
+        expr: >
+          (time() - max(pg_stat_user_tables_last_autovacuum{relname="market_prices"}))
+          > 120
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "Database connections at {{ $value | humanizePercentage }} of max"
+          summary: "Oracle prices not updated in 2+ minutes"
+          description: "Stop orders and risk checks are using stale prices. Immediate investigation required."
 
-  # ================================================================
-  # Infrastructure — Redis
-  # ================================================================
-  - name: redis
-    rules:
-      - alert: RedisDown
-        expr: up{job="redis"} == 0
-        for: 1m
+      - alert: OracleAllSourcesFailing
+        expr: >
+          increase(cache_misses_total{key_type="oracle"}[5m])
+          > 3 * increase(cache_hits_total{key_type="oracle"}[5m])
+        for: 5m
         labels:
-          severity: critical
+          severity: warning
         annotations:
-          summary: "Redis is unreachable"
-          description: "Event bus, cache, rate limiting, and streams are all affected."
+          summary: "Oracle cache miss rate high — external sources may be failing"
 
   # ================================================================
-  # Infrastructure — Services
+  # Services & Health
   # ================================================================
   - name: services
     rules:
       - alert: PlatformDown
         expr: up{job="intent-trading"} == 0
-        for: 1m
+        for: 30s
         labels:
           severity: critical
         annotations:
           summary: "Intent trading platform is down"
+          description: "Core platform process is not responding to scrapes."
 
       - alert: GatewayDown
         expr: up{job="api-gateway"} == 0
-        for: 1m
+        for: 30s
         labels:
           severity: critical
         annotations:
           summary: "API gateway is down"
+          description: "All inbound traffic is blocked."
 
       - alert: HealthCheckFailing
         expr: >
@@ -204,21 +434,93 @@ groups:
         annotations:
           summary: "Health check failing for {{ $labels.instance }}"
 
-  # ================================================================
-  # Oracle
-  # ================================================================
-  - name: oracle
-    rules:
-      - alert: OraclePriceStale
+      - alert: HighRestartRate
         expr: >
-          (time() - max(pg_stat_user_tables_last_autovacuum{relname="market_prices"}))
-          > 120
-        for: 2m
+          changes(process_start_time_seconds{job="intent-trading"}[1h]) > 3
+        for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "Oracle prices not updated in 2+ minutes"
-          description: "The oracle worker may be stuck. Check logs."
+          summary: "Platform restarted {{ $value }} times in the last hour"
+          description: "Possible crash loop. Check container logs."
+
+  # ================================================================
+  # Memory
+  # ================================================================
+  - name: memory
+    rules:
+      - alert: HighMemoryUsage
+        expr: >
+          (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+          / node_memory_MemTotal_bytes
+          > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage above 85% on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} memory used. OOM kill risk if continues rising."
+
+      - alert: CriticalMemoryUsage
+        expr: >
+          (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+          / node_memory_MemTotal_bytes
+          > 0.95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Memory usage above 95% on {{ $labels.instance }}"
+          description: "System at risk of OOM killer activation."
+
+      - alert: ContainerMemoryHigh
+        expr: >
+          container_memory_usage_bytes{name=~"intent-trading|api-gateway|solver-bot"}
+          / container_spec_memory_limit_bytes
+          > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} memory at {{ $value | humanizePercentage }} of limit"
+
+  # ================================================================
+  # Disk
+  # ================================================================
+  - name: disk
+    rules:
+      - alert: DiskSpaceLow
+        expr: >
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"})
+          < 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk space below 10% on {{ $labels.instance }}"
+          description: "Database WAL and backups will fail if disk fills up."
+
+      - alert: DiskSpaceWarning
+        expr: >
+          (node_filesystem_avail_bytes{mountpoint="/"}
+          / node_filesystem_size_bytes{mountpoint="/"})
+          < 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk space below 20% on {{ $labels.instance }}"
+
+      - alert: DiskIOHighLatency
+        expr: >
+          rate(node_disk_io_time_seconds_total[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk I/O utilization above 50% on {{ $labels.instance }}"
+          description: "High disk I/O may affect DB and WAL write performance."
 
   # ================================================================
   # Backups
@@ -261,30 +563,3 @@ groups:
         annotations:
           summary: "Backup file suspiciously small ({{ $value }} bytes)"
           description: "May indicate an incomplete dump."
-
-  # ================================================================
-  # Disk
-  # ================================================================
-  - name: disk
-    rules:
-      - alert: DiskSpaceLow
-        expr: >
-          (node_filesystem_avail_bytes{mountpoint="/"}
-          / node_filesystem_size_bytes{mountpoint="/"})
-          < 0.10
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Disk space below 10% on {{ $labels.instance }}"
-
-      - alert: DiskSpaceWarning
-        expr: >
-          (node_filesystem_avail_bytes{mountpoint="/"}
-          / node_filesystem_size_bytes{mountpoint="/"})
-          < 0.20
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Disk space below 20% on {{ $labels.instance }}"

@@ -10,6 +10,7 @@ use super::model::{
     TopSolversQuery, UpdateSolverRequest,
 };
 use super::service::{SolverError, SolverReputationService};
+use super::stats::{LeaderboardEntry, SolverStats};
 
 // ── Registration (public) ──────────────────────────────
 
@@ -94,6 +95,25 @@ pub async fn get_top_solvers(
 ) -> Result<Json<Vec<SolverPublic>>, (StatusCode, String)> {
     let solvers = svc.get_top_solvers(query.limit).await.map_err(map_error)?;
     Ok(Json(solvers.into_iter().map(SolverPublic::from).collect()))
+}
+
+// ── Stats ───────────────────────────────────────────────
+
+pub async fn get_solver_stats(
+    State(svc): State<Arc<SolverReputationService>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<SolverStats>, (StatusCode, String)> {
+    svc.get_solver_stats(id).await.map(Json).map_err(map_error)
+}
+
+pub async fn get_leaderboard(
+    State(svc): State<Arc<SolverReputationService>>,
+    Query(query): Query<TopSolversQuery>,
+) -> Result<Json<Vec<LeaderboardEntry>>, (StatusCode, String)> {
+    svc.get_leaderboard(query.limit)
+        .await
+        .map(Json)
+        .map_err(map_error)
 }
 
 // ── Error mapping ───────────────────────────────────────

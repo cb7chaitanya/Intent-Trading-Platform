@@ -2,10 +2,13 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
+use sqlx::PgPool;
+
 use crate::cache::service::{CacheService, CacheTtl};
 
 use super::model::{Solver, SolverDashboard, SolverPublic};
 use super::repository::SolverRepository;
+use super::stats::{self, LeaderboardEntry, SolverStats};
 
 #[derive(Debug)]
 pub enum SolverError {
@@ -241,6 +244,22 @@ impl SolverReputationService {
         }
 
         Ok(solvers)
+    }
+
+    // ── Stats / leaderboard ───────────────────────────────
+
+    pub fn pool(&self) -> &PgPool {
+        self.repo.pool()
+    }
+
+    pub async fn get_solver_stats(&self, solver_id: Uuid) -> Result<SolverStats, SolverError> {
+        stats::get_stats(self.repo.pool(), solver_id)
+            .await?
+            .ok_or(SolverError::NotFound)
+    }
+
+    pub async fn get_leaderboard(&self, limit: i64) -> Result<Vec<LeaderboardEntry>, SolverError> {
+        Ok(stats::get_leaderboard(self.repo.pool(), limit).await?)
     }
 }
 

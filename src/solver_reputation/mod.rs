@@ -2,6 +2,7 @@ pub mod handler;
 pub mod model;
 pub mod repository;
 pub mod service;
+pub mod stats;
 
 use std::sync::Arc;
 
@@ -15,8 +16,10 @@ pub fn router(solver_service: Arc<SolverReputationService>) -> Router {
     Router::new()
         .route("/solvers/register", post(handler::register_solver))
         .route("/solvers/top", get(handler::get_top_solvers))
+        .route("/solvers/leaderboard", get(handler::get_leaderboard))
         .route("/solvers/{id}", get(handler::get_solver))
         .route("/solvers/{id}/dashboard", get(handler::get_dashboard))
+        .route("/solvers/{id}/stats", get(handler::get_solver_stats))
         .with_state(solver_service)
 }
 

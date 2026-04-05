@@ -13,6 +13,10 @@ impl SolverRepository {
         Self { pool }
     }
 
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Register a brand-new solver with an API key.
     pub async fn register(
         &self,

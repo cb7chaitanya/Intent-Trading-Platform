@@ -8,8 +8,10 @@ import {
   Trophy,
   History,
   Layers,
+  Shield,
   ChevronLeft,
 } from "lucide-react";
+import { useAuth } from "@/contexts/AuthProvider";
 
 interface SidebarProps {
   collapsed: boolean;
@@ -25,8 +27,14 @@ const NAV = [
   { href: "/leaderboard", label: "Leaderboard", icon: Trophy },
 ];
 
+const ADMIN_NAV = [
+  { href: "/admin", label: "Admin", icon: Shield },
+];
+
 const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle }) => {
   const router = useRouter();
+  const { hasRole } = useAuth();
+  const showAdmin = hasRole("admin");
 
   return (
     <aside
@@ -76,6 +84,31 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle }) => {
             </Link>
           );
         })}
+
+        {/* Admin section */}
+        {showAdmin && (
+          <>
+            <div className="my-2 border-t" />
+            {ADMIN_NAV.map(({ href, label, icon: Icon }) => {
+              const active = router.pathname.startsWith(href);
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all ${
+                    active
+                      ? "bg-brand-600/10 text-brand-500"
+                      : "text-[var(--text-secondary)] hover:bg-surface-2 hover:text-[var(--text-primary)]"
+                  }`}
+                  title={collapsed ? label : undefined}
+                >
+                  <Icon size={18} className="shrink-0" />
+                  {!collapsed && <span>{label}</span>}
+                </Link>
+              );
+            })}
+          </>
+        )}
       </nav>
 
       {/* Connection indicator */}

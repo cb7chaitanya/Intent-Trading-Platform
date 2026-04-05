@@ -174,4 +174,34 @@ export const getTopSolvers = (limit = 10) =>
 export const getSolver = (id: string) =>
   api.get(`/solvers/${id}`).then((r) => r.data);
 
+// Health
+export const getHealthReady = () =>
+  api.get("/health/ready").then((r) => r.data);
+
+export const getHealthDb = () =>
+  api.get("/health/db").then((r) => r.data);
+
+export const getHealthRedis = () =>
+  api.get("/health/redis").then((r) => r.data);
+
+// Metrics (Prometheus text format)
+export const getMetricsRaw = () =>
+  api.get("/metrics", { headers: { Accept: "text/plain" } }).then((r) => r.data);
+
+// Admin
+export const getAdminStats = () =>
+  api.get("/admin/stats").then((r) => r.data);
+
+export const getAdminRecentIntents = (limit = 20) =>
+  api.get("/admin/intents/recent", { params: { limit } }).then((r) => r.data);
+
+export const getAdminRecentFills = (limit = 20) =>
+  api.get("/admin/fills/recent", { params: { limit } }).then((r) => r.data);
+
+export const getAdminFailedJobs = (limit = 20) =>
+  api.get("/admin/failed-jobs", { params: { limit } }).then((r) => r.data);
+
+export const getAdminSolverPerformance = () =>
+  api.get("/admin/solvers/performance").then((r) => r.data);
+
 export default api;

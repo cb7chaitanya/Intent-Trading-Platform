@@ -9,6 +9,7 @@ use super::registry::ChainRegistry;
 use super::repository::WalletRepository;
 use super::rpc::RpcClient;
 use super::signing;
+use super::solana_signing;
 
 // ── Errors ───────────────────────────────────────────────
 
@@ -92,8 +93,20 @@ impl WalletService {
         // Verify chain is supported before generating keys
         self.adapter(chain)?;
 
-        let (private_key, address) = signing::generate_keypair();
-        let (encrypted_key, nonce) = signing::encrypt_key(&private_key, &self.master_key);
+        // Chain-specific keypair generation
+        let (seed, address, encrypted_key, nonce) = match chain {
+            "solana" => {
+                let (seed, addr) = solana_signing::generate_keypair();
+                let (enc, n) = solana_signing::encrypt_seed(&seed, &self.master_key);
+                (seed, addr, enc, n)
+            }
+            _ => {
+                // Ethereum and other EVM chains: secp256k1
+                let (seed, addr) = signing::generate_keypair();
+                let (enc, n) = signing::encrypt_key(&seed, &self.master_key);
+                (seed, addr, enc, n)
+            }
+        };
 
         let wallet = Wallet {
             id: Uuid::new_v4(),
@@ -122,8 +135,20 @@ impl WalletService {
     }
 
     pub fn decrypt_wallet_key(&self, wallet: &Wallet) -> Result<[u8; 32], WalletError> {
-        signing::decrypt_key(&wallet.encrypted_key, &wallet.nonce, &self.master_key)
-            .map_err(WalletError::SigningError)
+        match wallet.chain.as_str() {
+            "solana" => solana_signing::decrypt_seed(
+                &wallet.encrypted_key,
+                &wallet.nonce,
+                &self.master_key,
+            )
+            .map_err(WalletError::SigningError),
+            _ => signing::decrypt_key(
+                &wallet.encrypted_key,
+                &wallet.nonce,
+                &self.master_key,
+            )
+            .map_err(WalletError::SigningError),
+        }
     }
 
     // ── Chain-routed settlement ───────────────────────

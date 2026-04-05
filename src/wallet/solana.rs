@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 
 use super::chain::*;
-use super::signing;
+use super::solana_signing;
 
-/// Solana adapter using JSON-RPC to a Solana validator node.
+/// Solana adapter using Ed25519 signing and JSON-RPC to a Solana validator.
 pub struct SolanaAdapter {
     client: reqwest::Client,
     endpoint: String,
@@ -63,12 +63,11 @@ impl ChainAdapter for SolanaAdapter {
     }
 
     fn required_confirmations(&self) -> u32 {
-        // Solana finality: ~31 confirmations (roughly 12-15 seconds)
         31
     }
 
     async fn send_transaction(&self, tx: &SignedTx) -> Result<String, ChainError> {
-        let encoded = bs58_encode(&tx.data);
+        let encoded = solana_signing::bs58_encode(&tx.data);
         let result = self
             .rpc_call(
                 "sendTransaction",
@@ -100,7 +99,6 @@ impl ChainAdapter for SolanaAdapter {
             _ => return Ok(TxState::Pending),
         };
 
-        // Check for error
         if let Some(err) = status.get("err") {
             if !err.is_null() {
                 return Ok(TxState::Failed {
@@ -118,7 +116,6 @@ impl ChainAdapter for SolanaAdapter {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        // confirmationStatus: "finalized" means fully confirmed
         let finalized = status
             .get("confirmationStatus")
             .and_then(|v| v.as_str())
@@ -131,11 +128,8 @@ impl ChainAdapter for SolanaAdapter {
     }
 
     async fn estimate_fees(&self, _data: &SettlementData) -> Result<FeeEstimate, ChainError> {
-        // Solana has a fixed base fee of 5000 lamports per signature,
-        // plus priority fees set by the user.
-        let base_fee: u64 = 5_000;
+        let base_fee: u64 = 5_000; // 5000 lamports per signature
 
-        // Get recent priority fee levels
         let result = self
             .rpc_call("getRecentPrioritizationFees", serde_json::json!([]))
             .await;
@@ -168,7 +162,6 @@ impl ChainAdapter for SolanaAdapter {
 
     async fn get_balance(&self, address: &str, token: &str) -> Result<u64, ChainError> {
         if token == "SOL" {
-            // Native SOL balance
             let result = self
                 .rpc_call("getBalance", serde_json::json!([address]))
                 .await?;
@@ -178,7 +171,7 @@ impl ChainAdapter for SolanaAdapter {
                 .ok_or_else(|| ChainError::Rpc("Invalid balance response".into()));
         }
 
-        // SPL token balance — query getTokenAccountsByOwner
+        // SPL token balance
         let result = self
             .rpc_call(
                 "getTokenAccountsByOwner",
@@ -216,9 +209,6 @@ impl ChainAdapter for SolanaAdapter {
         &self,
         data: &SettlementData,
     ) -> Result<UnsignedTx, ChainError> {
-        // Build a Solana transaction instruction.
-        // In production this would construct a proper Solana transaction
-        // with recent blockhash, program IDs, and account keys.
         let recent_blockhash = self
             .rpc_call("getLatestBlockhash", serde_json::json!([]))
             .await
@@ -226,6 +216,10 @@ impl ChainAdapter for SolanaAdapter {
             .and_then(|v| v.get("value")?.get("blockhash")?.as_str().map(String::from))
             .unwrap_or_default();
 
+        // In production: build a proper Solana Transaction with compact-array
+        // header, account keys, recent blockhash, and instructions. For now
+        // we serialise the settlement intent so sign_transaction receives a
+        // deterministic byte payload.
         let payload = serde_json::json!({
             "from": data.from,
             "to": data.to,
@@ -246,14 +240,13 @@ impl ChainAdapter for SolanaAdapter {
         unsigned_tx: &UnsignedTx,
         private_key: &[u8; 32],
     ) -> Result<SignedTx, ChainError> {
-        // Ed25519 signing for Solana.
-        // In production, use ed25519-dalek. For now, use our ECDSA signer
-        // as a placeholder — the trait boundary is what matters.
-        let sig =
-            signing::sign_data(private_key, &unsigned_tx.data).map_err(ChainError::Signing)?;
+        // Real Ed25519 signing via solana_signing module
+        let sig = solana_signing::sign_transaction(private_key, &unsigned_tx.data)
+            .map_err(ChainError::Signing)?;
 
-        // Solana transaction = signature + message
-        let mut tx_bytes = Vec::with_capacity(sig.len() + unsigned_tx.data.len());
+        // Solana wire format: [signature_count(1)][signature(64)][message...]
+        let mut tx_bytes = Vec::with_capacity(1 + 64 + unsigned_tx.data.len());
+        tx_bytes.push(1); // 1 signature
         tx_bytes.extend_from_slice(&sig);
         tx_bytes.extend_from_slice(&unsigned_tx.data);
 
@@ -261,60 +254,5 @@ impl ChainAdapter for SolanaAdapter {
             chain: "solana".into(),
             data: tx_bytes,
         })
-    }
-}
-
-/// Base58 encode bytes (minimal implementation for Solana).
-fn bs58_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    if data.is_empty() {
-        return String::new();
-    }
-
-    // Count leading zeros
-    let zeros = data.iter().take_while(|&&b| b == 0).count();
-
-    let mut digits: Vec<u8> = Vec::new();
-    for &byte in data {
-        let mut carry = byte as u32;
-        for d in digits.iter_mut() {
-            carry += (*d as u32) << 8;
-            *d = (carry % 58) as u8;
-            carry /= 58;
-        }
-        while carry > 0 {
-            digits.push((carry % 58) as u8);
-            carry /= 58;
-        }
-    }
-
-    let mut result = String::with_capacity(zeros + digits.len());
-    for _ in 0..zeros {
-        result.push('1');
-    }
-    for d in digits.iter().rev() {
-        result.push(ALPHABET[*d as usize] as char);
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bs58_encode_empty() {
-        assert_eq!(bs58_encode(&[]), "");
-    }
-
-    #[test]
-    fn bs58_encode_known() {
-        // "Hello" in base58
-        assert_eq!(bs58_encode(b"Hello"), "9Ajdvzr");
-    }
-
-    #[test]
-    fn bs58_encode_leading_zeros() {
-        assert_eq!(&bs58_encode(&[0, 0, 1])[..2], "11");
     }
 }

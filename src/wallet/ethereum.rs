@@ -3,8 +3,9 @@ use async_trait::async_trait;
 use super::chain::*;
 use super::erc20_abi;
 use super::rlp;
-use super::rpc::RpcClient;
+use super::rpc::{RpcClient, RpcError};
 use super::signing;
+use crate::metrics::counters;
 
 // ── Gas constants ────────────────────────────────────────
 
@@ -26,6 +27,15 @@ const MAX_PRIORITY_FEE: u64 = 50_000_000_000;
 /// Buffer multiplier for maxFeePerGas over baseFee (2x) to survive
 /// base fee spikes for up to 6 consecutive full blocks.
 const BASE_FEE_MULTIPLIER: u64 = 2;
+
+/// Maximum retry attempts for transient send errors.
+const MAX_SEND_RETRIES: u32 = 3;
+
+/// Initial backoff delay between retries.
+const RETRY_BASE_DELAY_MS: u64 = 500;
+
+/// Gas price bump percentage when replacing an underpriced tx.
+const REPLACEMENT_BUMP_PCT: u64 = 15;
 
 // ── Gas estimation result ────────────────────────────────
 
@@ -200,11 +210,73 @@ impl ChainAdapter for EthereumAdapter {
     }
 
     async fn send_transaction(&self, tx: &SignedTx) -> Result<String, ChainError> {
-        let hex = format!("0x{}", hex::encode(&tx.data));
-        self.rpc
-            .send_raw_transaction(&hex)
-            .await
-            .map_err(|e| ChainError::Rpc(e.to_string()))
+        let raw_hex = format!("0x{}", hex::encode(&tx.data));
+
+        for attempt in 0..=MAX_SEND_RETRIES {
+            match self.rpc.send_raw_transaction(&raw_hex).await {
+                Ok(tx_hash) => {
+                    counters::ETH_TX_SUBMITTED
+                        .with_label_values(&["success"])
+                        .inc();
+                    tracing::info!(
+                        tx_hash = %tx_hash,
+                        attempt,
+                        "eth_tx_submitted"
+                    );
+                    return Ok(tx_hash);
+                }
+                Err(RpcError::JsonRpc { code, ref message }) => {
+                    let msg_lower = message.to_lowercase();
+                    let (retriable, category) = classify_send_error(code, &msg_lower);
+
+                    if retriable && attempt < MAX_SEND_RETRIES {
+                        counters::ETH_TX_RETRIES.inc();
+                        tracing::warn!(
+                            attempt,
+                            category,
+                            code,
+                            error = %message,
+                            "eth_tx_retrying"
+                        );
+                        let delay = RETRY_BASE_DELAY_MS * (1 << attempt);
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    }
+
+                    // Non-retriable or exhausted retries
+                    counters::ETH_TX_SUBMITTED
+                        .with_label_values(&[category])
+                        .inc();
+                    tracing::error!(
+                        attempt,
+                        category,
+                        code,
+                        error = %message,
+                        "eth_tx_failed"
+                    );
+                    return Err(ChainError::Rpc(format!("{category}: {message}")));
+                }
+                Err(RpcError::Network(ref e)) if attempt < MAX_SEND_RETRIES => {
+                    counters::ETH_TX_RETRIES.inc();
+                    tracing::warn!(attempt, error = %e, "eth_tx_network_retry");
+                    let delay = RETRY_BASE_DELAY_MS * (1 << attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Err(e) => {
+                    counters::ETH_TX_SUBMITTED
+                        .with_label_values(&["failed"])
+                        .inc();
+                    tracing::error!(error = %e, "eth_tx_failed");
+                    return Err(ChainError::Rpc(e.to_string()));
+                }
+            }
+        }
+
+        counters::ETH_TX_SUBMITTED
+            .with_label_values(&["failed"])
+            .inc();
+        Err(ChainError::Rpc("Max retries exceeded".into()))
     }
 
     async fn get_transaction_status(&self, tx_hash: &str) -> Result<TxState, ChainError> {
@@ -330,6 +402,49 @@ impl ChainAdapter for EthereumAdapter {
             data: sig,
         })
     }
+}
+
+// ── Error classification ─────────────────────────────────
+
+/// Classify an eth_sendRawTransaction JSON-RPC error.
+/// Returns (retriable, category_label).
+fn classify_send_error(code: i64, msg: &str) -> (bool, &'static str) {
+    // "nonce too low" — our nonce is stale, need to re-fetch
+    if msg.contains("nonce too low") || msg.contains("nonce is too low") {
+        return (true, "nonce_retry");
+    }
+
+    // "replacement transaction underpriced" — need higher gas
+    if msg.contains("replacement transaction underpriced")
+        || msg.contains("underpriced")
+        || msg.contains("gas price too low")
+    {
+        return (true, "underpriced");
+    }
+
+    // "already known" — node already has this tx, not an error
+    if msg.contains("already known") || msg.contains("already imported") {
+        // Not retriable — the tx is already in the mempool.
+        // Return success-like: the caller should poll for the receipt.
+        return (false, "already_known");
+    }
+
+    // "transaction pool is full" — transient, retry later
+    if msg.contains("txpool is full") || msg.contains("transaction pool") {
+        return (true, "pool_full");
+    }
+
+    // "insufficient funds" — not retriable
+    if msg.contains("insufficient funds") || msg.contains("insufficient balance") {
+        return (false, "insufficient_funds");
+    }
+
+    // Server errors (-32000 to -32099 range) are often transient
+    if (-32099..=-32000).contains(&code) && !msg.contains("revert") {
+        return (true, "server_error");
+    }
+
+    (false, "failed")
 }
 
 // ── Tests ────────────────────────────────────────────────
@@ -472,16 +587,90 @@ mod tests {
 
     #[test]
     fn priority_fee_clamped() {
-        // Below minimum
-        let low: u64 = 50_000_000; // 0.05 gwei
+        let low: u64 = 50_000_000;
         assert_eq!(low.clamp(MIN_PRIORITY_FEE, MAX_PRIORITY_FEE), MIN_PRIORITY_FEE);
-
-        // Above maximum
-        let high: u64 = 100_000_000_000; // 100 gwei
+        let high: u64 = 100_000_000_000;
         assert_eq!(high.clamp(MIN_PRIORITY_FEE, MAX_PRIORITY_FEE), MAX_PRIORITY_FEE);
-
-        // Within range
-        let normal: u64 = 2_000_000_000; // 2 gwei
+        let normal: u64 = 2_000_000_000;
         assert_eq!(normal.clamp(MIN_PRIORITY_FEE, MAX_PRIORITY_FEE), normal);
+    }
+
+    // ── Error classification ─────────────────────────
+
+    #[test]
+    fn classify_nonce_too_low() {
+        let (retriable, cat) = classify_send_error(-32000, "nonce too low");
+        assert!(retriable);
+        assert_eq!(cat, "nonce_retry");
+    }
+
+    #[test]
+    fn classify_nonce_geth_variant() {
+        let (retriable, cat) = classify_send_error(-32000, "nonce is too low for next tx");
+        assert!(retriable);
+        assert_eq!(cat, "nonce_retry");
+    }
+
+    #[test]
+    fn classify_replacement_underpriced() {
+        let (retriable, cat) = classify_send_error(-32000, "replacement transaction underpriced");
+        assert!(retriable);
+        assert_eq!(cat, "underpriced");
+    }
+
+    #[test]
+    fn classify_gas_price_too_low() {
+        let (retriable, cat) = classify_send_error(-32000, "gas price too low to replace");
+        assert!(retriable);
+        assert_eq!(cat, "underpriced");
+    }
+
+    #[test]
+    fn classify_already_known() {
+        let (retriable, cat) = classify_send_error(-32000, "already known");
+        assert!(!retriable); // not an error, tx is in mempool
+        assert_eq!(cat, "already_known");
+    }
+
+    #[test]
+    fn classify_already_imported() {
+        let (retriable, cat) = classify_send_error(-32000, "transaction already imported");
+        assert!(!retriable);
+        assert_eq!(cat, "already_known");
+    }
+
+    #[test]
+    fn classify_pool_full() {
+        let (retriable, cat) = classify_send_error(-32000, "txpool is full");
+        assert!(retriable);
+        assert_eq!(cat, "pool_full");
+    }
+
+    #[test]
+    fn classify_insufficient_funds() {
+        let (retriable, cat) = classify_send_error(-32000, "insufficient funds for gas * price + value");
+        assert!(!retriable);
+        assert_eq!(cat, "insufficient_funds");
+    }
+
+    #[test]
+    fn classify_server_error_retriable() {
+        let (retriable, cat) = classify_send_error(-32050, "internal error");
+        assert!(retriable);
+        assert_eq!(cat, "server_error");
+    }
+
+    #[test]
+    fn classify_revert_not_retriable() {
+        let (retriable, cat) = classify_send_error(-32000, "execution revert");
+        assert!(!retriable);
+        assert_eq!(cat, "failed");
+    }
+
+    #[test]
+    fn classify_unknown_error() {
+        let (retriable, cat) = classify_send_error(-1, "something unknown happened");
+        assert!(!retriable);
+        assert_eq!(cat, "failed");
     }
 }

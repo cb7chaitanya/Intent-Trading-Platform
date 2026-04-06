@@ -101,6 +101,22 @@ pub static CACHE_MISSES: Lazy<IntCounterVec> = Lazy::new(|| {
     c
 });
 
+pub static ETH_TX_SUBMITTED: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("eth_tx_submitted_total", "Ethereum transactions submitted"),
+        &["outcome"], // "success", "nonce_retry", "replaced", "failed"
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
+pub static ETH_TX_RETRIES: Lazy<IntCounter> = Lazy::new(|| {
+    let c = IntCounter::new("eth_tx_retries_total", "Ethereum tx submission retries").unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
 pub static DB_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     let c = IntCounterVec::new(
         Opts::new("db_queries_total", "Total database queries"),

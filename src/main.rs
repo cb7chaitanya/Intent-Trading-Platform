@@ -5,6 +5,7 @@ mod auth;
 mod balances;
 mod cache;
 mod config;
+mod cross_chain;
 mod csrf;
 mod db;
 mod ledger;

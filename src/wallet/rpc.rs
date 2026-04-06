@@ -1,10 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitError};
+
 /// JSON-RPC client for sending and querying blockchain transactions.
+/// Wraps all calls with a circuit breaker to prevent cascading failures.
 pub struct RpcClient {
     client: reqwest::Client,
     endpoint: String,
     chain_id: u64,
+    breaker: CircuitBreaker,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,10 +60,16 @@ impl std::fmt::Display for RpcError {
 
 impl RpcClient {
     pub fn new(endpoint: &str, chain_id: u64) -> Self {
+        let breaker_name = if chain_id == 1 || chain_id == 11155111 {
+            "ethereum_rpc"
+        } else {
+            "evm_rpc"
+        };
         Self {
             client: reqwest::Client::new(),
             endpoint: endpoint.to_string(),
             chain_id,
+            breaker: CircuitBreaker::new(CircuitBreakerConfig::new(breaker_name, 5, 30)),
         }
     }
 
@@ -261,35 +271,49 @@ impl RpcClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, RpcError> {
+        let client = self.client.clone();
+        let endpoint = self.endpoint.clone();
         let body = JsonRpcRequest {
             jsonrpc: "2.0",
             method,
             params,
             id: 1,
         };
+        let body_json = serde_json::to_value(&body).unwrap_or_default();
 
-        let resp = self
-            .client
-            .post(&self.endpoint)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| RpcError::Network(e.to_string()))?;
+        let result = self.breaker.call(async {
+            let resp = client
+                .post(&endpoint)
+                .json(&body_json)
+                .send()
+                .await
+                .map_err(|e| RpcError::Network(e.to_string()))?;
 
-        let rpc_resp: JsonRpcResponse = resp
-            .json()
-            .await
-            .map_err(|e| RpcError::Parse(e.to_string()))?;
+            let rpc_resp: JsonRpcResponse = resp
+                .json()
+                .await
+                .map_err(|e| RpcError::Parse(e.to_string()))?;
 
-        if let Some(err) = rpc_resp.error {
-            return Err(RpcError::JsonRpc {
-                code: err.code,
-                message: err.message,
-            });
+            if let Some(err) = rpc_resp.error {
+                return Err(RpcError::JsonRpc {
+                    code: err.code,
+                    message: err.message,
+                });
+            }
+
+            rpc_resp
+                .result
+                .ok_or_else(|| RpcError::Parse("Missing result field".into()))
+        }).await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(CircuitError::Open { breaker, remaining_secs }) => {
+                Err(RpcError::Network(format!(
+                    "Circuit breaker '{breaker}' open (resets in {remaining_secs}s)"
+                )))
+            }
+            Err(CircuitError::Inner(e)) => Err(e),
         }
-
-        rpc_resp
-            .result
-            .ok_or_else(|| RpcError::Parse("Missing result field".into()))
     }
 }

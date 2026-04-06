@@ -4,6 +4,7 @@ mod api_keys;
 mod auth;
 mod balances;
 mod cache;
+mod circuit_breaker;
 mod config;
 mod cross_chain;
 mod csrf;

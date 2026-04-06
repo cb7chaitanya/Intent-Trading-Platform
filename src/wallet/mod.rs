@@ -3,6 +3,7 @@ pub mod confirmation;
 pub mod erc20_abi;
 pub mod ethereum;
 pub mod model;
+pub mod rlp;
 pub mod registry;
 pub mod repository;
 pub mod rpc;

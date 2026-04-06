@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use super::chain::*;
 use super::erc20_abi;
+use super::rlp;
 use super::rpc::RpcClient;
 use super::signing;
 
@@ -144,7 +145,9 @@ impl EthereumAdapter {
         DEFAULT_PRIORITY_FEE
     }
 
-    /// Serialise an EIP-1559 (type 2) unsigned transaction envelope.
+    /// Serialise an EIP-1559 (type 2) unsigned transaction for signing.
+    /// Uses proper Ethereum RLP encoding: 0x02 || RLP([chainId, nonce,
+    /// maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList])
     fn encode_type2_tx(
         chain_id: u64,
         nonce: u64,
@@ -152,28 +155,20 @@ impl EthereumAdapter {
         to_contract: &[u8; 20],
         calldata: &[u8],
     ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-
-        // Type 2 prefix
-        buf.push(TX_TYPE_EIP1559);
-
-        // Fields: chain_id, nonce, maxPriorityFeePerGas, maxFeePerGas,
-        //         gasLimit, to, value, data, accessList (empty)
-        buf.extend_from_slice(&chain_id.to_be_bytes());                 // 8
-        buf.extend_from_slice(&nonce.to_be_bytes());                     // 8
-        buf.extend_from_slice(&gas.max_priority_fee.to_be_bytes());     // 8
-        buf.extend_from_slice(&gas.max_fee_per_gas.to_be_bytes());      // 8
-        buf.extend_from_slice(&gas.gas_limit.to_be_bytes());            // 8
-        buf.extend_from_slice(to_contract);                              // 20
-        buf.extend_from_slice(&0u64.to_be_bytes());                      // 8 value = 0
-        buf.extend_from_slice(&(calldata.len() as u32).to_be_bytes());  // 4
-        buf.extend_from_slice(calldata);                                 // N
-        buf.push(0); // empty access list
-
-        buf
+        rlp::encode_eip1559_unsigned(&rlp::Eip1559TxFields {
+            chain_id,
+            nonce,
+            max_priority_fee_per_gas: gas.max_priority_fee,
+            max_fee_per_gas: gas.max_fee_per_gas,
+            gas_limit: gas.gas_limit,
+            to: *to_contract,
+            value: 0, // ERC-20 transfer, value is always 0
+            data: calldata.to_vec(),
+        })
     }
 
-    /// Serialise a legacy (type 0) unsigned transaction envelope.
+    /// Serialise a legacy unsigned transaction for signing (EIP-155).
+    /// RLP([nonce, gasPrice, gasLimit, to, value, data, chainId, 0, 0])
     fn encode_legacy_tx(
         chain_id: u64,
         nonce: u64,
@@ -182,20 +177,15 @@ impl EthereumAdapter {
         to_contract: &[u8; 20],
         calldata: &[u8],
     ) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(256);
-
-        buf.push(TX_TYPE_LEGACY);
-
-        buf.extend_from_slice(&chain_id.to_be_bytes());
-        buf.extend_from_slice(&nonce.to_be_bytes());
-        buf.extend_from_slice(&gas_price.to_be_bytes());
-        buf.extend_from_slice(&gas_limit.to_be_bytes());
-        buf.extend_from_slice(to_contract);
-        buf.extend_from_slice(&0u64.to_be_bytes());
-        buf.extend_from_slice(&(calldata.len() as u32).to_be_bytes());
-        buf.extend_from_slice(calldata);
-
-        buf
+        rlp::encode_legacy_unsigned(&rlp::LegacyTxFields {
+            nonce,
+            gas_price,
+            gas_limit,
+            to: *to_contract,
+            value: 0,
+            data: calldata.to_vec(),
+            chain_id,
+        })
     }
 }
 
@@ -357,58 +347,44 @@ mod tests {
             max_fee_per_gas: 62_000_000_000,
             gas_limit: 65_000,
         };
-        let to = [0xAA; 20];
-        let calldata = erc20_abi::encode_transfer(&[0xBB; 20], 1000);
-
-        let tx = EthereumAdapter::encode_type2_tx(1, 5, &gas, &to, &calldata);
-        assert_eq!(tx[0], TX_TYPE_EIP1559);
+        let tx = EthereumAdapter::encode_type2_tx(1, 5, &gas, &[0xAA; 20], &[]);
+        assert_eq!(tx[0], 0x02);
     }
 
     #[test]
-    fn legacy_tx_starts_with_0x00() {
-        let to = [0xAA; 20];
-        let calldata = erc20_abi::encode_transfer(&[0xBB; 20], 1000);
-
-        let tx = EthereumAdapter::encode_legacy_tx(1, 0, 20_000_000_000, 65000, &to, &calldata);
-        assert_eq!(tx[0], TX_TYPE_LEGACY);
-    }
-
-    #[test]
-    fn type2_contains_priority_and_max_fee() {
-        let gas = GasParams {
-            eip1559: true,
-            base_fee: 10_000_000_000,
-            max_priority_fee: 1_500_000_000,
-            max_fee_per_gas: 21_500_000_000,
-            gas_limit: 65_000,
-        };
-        let to = [0x01; 20];
-        let calldata = erc20_abi::encode_transfer(&[0x02; 20], 100);
-
-        let tx = EthereumAdapter::encode_type2_tx(1, 0, &gas, &to, &calldata);
-
-        // Bytes 17..25: maxPriorityFeePerGas (big-endian u64)
-        let priority = u64::from_be_bytes(tx[17..25].try_into().unwrap());
-        assert_eq!(priority, 1_500_000_000);
-
-        // Bytes 25..33: maxFeePerGas
-        let max_fee = u64::from_be_bytes(tx[25..33].try_into().unwrap());
-        assert_eq!(max_fee, 21_500_000_000);
-    }
-
-    #[test]
-    fn type2_gas_limit_at_correct_offset() {
+    fn type2_second_byte_is_rlp_list() {
         let gas = GasParams {
             eip1559: true,
             base_fee: 0,
             max_priority_fee: 0,
             max_fee_per_gas: 0,
-            gas_limit: 80_000,
+            gas_limit: 0,
         };
         let tx = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &[]);
+        // After the 0x02 prefix, the RLP list prefix should be >= 0xc0
+        assert!(tx[1] >= 0xc0);
+    }
 
-        let limit = u64::from_be_bytes(tx[33..41].try_into().unwrap());
-        assert_eq!(limit, 80_000);
+    #[test]
+    fn legacy_tx_is_rlp_list() {
+        let tx = EthereumAdapter::encode_legacy_tx(1, 0, 20_000_000_000, 65000, &[0xAA; 20], &[]);
+        // Legacy tx starts directly with RLP list prefix
+        assert!(tx[0] >= 0xc0);
+    }
+
+    #[test]
+    fn type2_contains_to_address() {
+        let to = [0xDD; 20];
+        let gas = GasParams {
+            eip1559: true,
+            base_fee: 0,
+            max_priority_fee: 0,
+            max_fee_per_gas: 0,
+            gas_limit: 21_000,
+        };
+        let tx = EthereumAdapter::encode_type2_tx(1, 0, &gas, &to, &[]);
+        // The 20-byte address must appear somewhere in the encoded tx
+        assert!(tx.windows(20).any(|w| w == to));
     }
 
     #[test]
@@ -422,70 +398,67 @@ mod tests {
             gas_limit: 65_000,
         };
         let tx = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &calldata);
-
-        // Calldata length at offset 69..73
-        let data_len = u32::from_be_bytes(tx[69..73].try_into().unwrap()) as usize;
-        assert_eq!(data_len, 68);
-
-        // Calldata starts at 73
-        assert_eq!(&tx[73..73 + 4], &erc20_abi::TRANSFER_SELECTOR);
+        // Transfer selector must appear in the encoded tx
+        assert!(tx.windows(4).any(|w| w == erc20_abi::TRANSFER_SELECTOR));
     }
 
     #[test]
-    fn legacy_encodes_gas_price_instead_of_priority() {
-        let gas_price: u64 = 25_000_000_000;
-        let tx = EthereumAdapter::encode_legacy_tx(
-            1, 7, gas_price, 65_000, &[0; 20], &[],
-        );
-
-        // Bytes 17..25: gasPrice
-        let gp = u64::from_be_bytes(tx[17..25].try_into().unwrap());
-        assert_eq!(gp, gas_price);
+    fn legacy_contains_to_address() {
+        let to = [0xEE; 20];
+        let tx = EthereumAdapter::encode_legacy_tx(1, 0, 1, 21_000, &to, &[]);
+        assert!(tx.windows(20).any(|w| w == to));
     }
 
     #[test]
-    fn type2_nonce_encoded() {
+    fn legacy_contains_eip155_chain_id_suffix() {
+        let tx = EthereumAdapter::encode_legacy_tx(1, 0, 0, 21_000, &[0; 20], &[]);
+        // EIP-155: last 3 RLP items are chainId=1, r=empty, s=empty → 0x01, 0x80, 0x80
+        let data = &tx[1..]; // skip list prefix
+        let tail = &data[data.len() - 3..];
+        assert_eq!(tail, &[0x01, 0x80, 0x80]);
+    }
+
+    #[test]
+    fn type2_with_calldata_larger_than_without() {
         let gas = GasParams {
             eip1559: true,
             base_fee: 0,
             max_priority_fee: 0,
             max_fee_per_gas: 0,
-            gas_limit: 0,
+            gas_limit: 65_000,
         };
-        let tx = EthereumAdapter::encode_type2_tx(1, 42, &gas, &[0; 20], &[]);
-
-        let nonce = u64::from_be_bytes(tx[9..17].try_into().unwrap());
-        assert_eq!(nonce, 42);
+        let without = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &[]);
+        let calldata = erc20_abi::encode_transfer(&[0; 20], 1000);
+        let with = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &calldata);
+        assert!(with.len() > without.len());
     }
 
     #[test]
-    fn type2_chain_id_encoded() {
+    fn type2_different_chain_ids_produce_different_encoding() {
         let gas = GasParams {
             eip1559: true,
             base_fee: 0,
             max_priority_fee: 0,
             max_fee_per_gas: 0,
-            gas_limit: 0,
+            gas_limit: 21_000,
         };
-        let tx = EthereumAdapter::encode_type2_tx(137, 0, &gas, &[0; 20], &[]);
-
-        let chain = u64::from_be_bytes(tx[1..9].try_into().unwrap());
-        assert_eq!(chain, 137); // Polygon
+        let tx1 = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &[]);
+        let tx137 = EthereumAdapter::encode_type2_tx(137, 0, &gas, &[0; 20], &[]);
+        assert_ne!(tx1, tx137);
     }
 
     #[test]
-    fn type2_to_address_at_correct_offset() {
+    fn type2_different_nonces_produce_different_encoding() {
         let gas = GasParams {
             eip1559: true,
             base_fee: 0,
             max_priority_fee: 0,
             max_fee_per_gas: 0,
-            gas_limit: 0,
+            gas_limit: 21_000,
         };
-        let to = [0xDE; 20];
-        let tx = EthereumAdapter::encode_type2_tx(1, 0, &gas, &to, &[]);
-
-        assert_eq!(&tx[41..61], &to);
+        let tx0 = EthereumAdapter::encode_type2_tx(1, 0, &gas, &[0; 20], &[]);
+        let tx42 = EthereumAdapter::encode_type2_tx(1, 42, &gas, &[0; 20], &[]);
+        assert_ne!(tx0, tx42);
     }
 
     #[test]

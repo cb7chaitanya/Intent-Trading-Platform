@@ -100,6 +100,7 @@ pub fn encode_address(addr: &[u8; 20]) -> Vec<u8> {
 // ── Unsigned transaction encoding ────────────────────────
 
 /// Fields for a legacy (pre-EIP-155) or EIP-155 unsigned transaction.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct LegacyTxFields {
     pub nonce: u64,
     pub gas_price: u64,
@@ -148,6 +149,7 @@ pub fn encode_legacy_signed(tx: &LegacyTxFields, v: u64, r: &[u8; 32], s: &[u8; 
 }
 
 /// Fields for an EIP-1559 (type 2) transaction.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Eip1559TxFields {
     pub chain_id: u64,
     pub nonce: u64,

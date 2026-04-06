@@ -3,6 +3,7 @@ import { Sun, Moon, Bell, Search, LogOut, User } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { useWebSocket } from "@/contexts/WebSocketProvider";
 import { useAuth } from "@/contexts/AuthProvider";
+import WalletButton from "@/components/solana-wallet/WalletButton";
 
 const Topbar: React.FC = () => {
   const { dark, toggle } = useTheme();
@@ -36,6 +37,9 @@ const Topbar: React.FC = () => {
           />
           {connected ? "Live" : "Offline"}
         </span>
+
+        {/* Solana wallet */}
+        <WalletButton />
 
         {/* Notifications */}
         <button className="btn-ghost !p-2 relative" aria-label="Notifications">

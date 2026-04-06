@@ -2,6 +2,7 @@ import type { AppProps } from "next/app";
 import { useRouter } from "next/router";
 import { AuthProvider, useAuth } from "@/contexts/AuthProvider";
 import { WebSocketProvider } from "@/contexts/WebSocketProvider";
+import { SolanaProvider } from "@/contexts/SolanaProvider";
 import Layout from "@/components/layout/Layout";
 import "@/styles/globals.css";
 
@@ -41,8 +42,10 @@ function AppContent({ Component, pageProps }: AppProps) {
 
 export default function App(props: AppProps) {
   return (
-    <AuthProvider>
-      <AppContent {...props} />
-    </AuthProvider>
+    <SolanaProvider>
+      <AuthProvider>
+        <AppContent {...props} />
+      </AuthProvider>
+    </SolanaProvider>
   );
 }

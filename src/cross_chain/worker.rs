@@ -1,27 +1,59 @@
 //! Background worker that monitors cross-chain settlement legs.
 //!
-//! Responsibilities:
-//! 1. Trigger destination leg execution after source leg is confirmed.
-//! 2. Detect timeouts and initiate refunds.
-//! 3. Update intent status when both legs are confirmed.
+//! Runs on a tokio interval loop with graceful shutdown support.
+//!
+//! Each cycle:
+//! 1. Scan for timed-out legs → refund both legs of the settlement.
+//! 2. Scan for destination legs ready to execute (source escrowed/confirmed)
+//!    → mark as Executing for wallet service pickup.
+//! 3. Scan for fully-confirmed settlements → mark intent Completed.
+//! 4. Update Prometheus gauges and counters.
 
 use std::sync::Arc;
 
+use sqlx::PgPool;
 use tokio_util::sync::CancellationToken;
+
+use crate::metrics::{counters, gauges};
+use crate::models::intent::IntentStatus;
 
 use super::model::LegStatus;
 use super::service::CrossChainService;
 
 const POLL_INTERVAL_SECS: u64 = 5;
 
-pub async fn run(service: Arc<CrossChainService>, cancel: CancellationToken) {
-    tracing::info!("Cross-chain settlement worker started");
+// ── Entry point ──────────────────────────────────────────
+
+pub async fn run(
+    service: Arc<CrossChainService>,
+    pool: PgPool,
+    cancel: CancellationToken,
+) {
+    tracing::info!(
+        poll_secs = POLL_INTERVAL_SECS,
+        "Cross-chain settlement worker started"
+    );
 
     loop {
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)) => {
-                process_timeouts(&service).await;
-                process_ready_destinations(&service).await;
+                let cycle_start = std::time::Instant::now();
+
+                let timeouts = process_timeouts(&service).await;
+                let destinations = process_ready_destinations(&service).await;
+                let completed = finalize_completed(&service, &pool).await;
+                update_pending_gauge(&service).await;
+
+                let cycle_ms = cycle_start.elapsed().as_millis();
+                if timeouts + destinations + completed > 0 {
+                    tracing::info!(
+                        timeouts,
+                        destinations,
+                        completed,
+                        cycle_ms,
+                        "cross_chain_worker_cycle"
+                    );
+                }
             }
             _ = cancel.cancelled() => {
                 tracing::info!("Cross-chain settlement worker shutting down");
@@ -31,80 +63,181 @@ pub async fn run(service: Arc<CrossChainService>, cancel: CancellationToken) {
     }
 }
 
-/// Find timed-out legs and refund them.
-async fn process_timeouts(svc: &CrossChainService) {
+// ── Timeout processing ───────────────────────────────────
+
+async fn process_timeouts(svc: &CrossChainService) -> u32 {
     let timed_out = match svc.find_timed_out_legs().await {
         Ok(legs) => legs,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to query timed-out legs");
-            return;
+            tracing::error!(error = %e, "cross_chain_timeout_query_failed");
+            return 0;
         }
     };
+
+    let mut count = 0u32;
 
     for leg in &timed_out {
         tracing::warn!(
             leg_id = %leg.id,
             intent_id = %leg.intent_id,
+            fill_id = %leg.fill_id,
             chain = %leg.chain,
             leg_index = leg.leg_index,
             status = ?leg.status,
             "cross_chain_leg_timeout"
         );
 
-        // Refund: mark the leg as refunded
+        // Refund this leg
         if let Err(e) = svc.refund_leg(leg.id).await {
-            tracing::error!(
-                leg_id = %leg.id,
-                error = %e,
-                "cross_chain_refund_failed"
-            );
+            tracing::error!(leg_id = %leg.id, error = %e, "cross_chain_refund_failed");
+            continue;
         }
 
-        // If the source leg was escrowed but timed out, also refund the counterpart
+        counters::CROSS_CHAIN_TIMEOUTS_TOTAL.inc();
+        counters::CROSS_CHAIN_LEGS_PROCESSED
+            .with_label_values(&["refunded"])
+            .inc();
+        count += 1;
+
+        // If source was escrowed, also refund the pending destination
         if leg.leg_index == 0 && leg.status == LegStatus::Escrowed {
             if let Ok(Some(settlement)) = svc.get_settlement(leg.fill_id).await {
-                if settlement.destination_leg.status == LegStatus::Pending {
-                    let _ = svc.refund_leg(settlement.destination_leg.id).await;
+                let dest = &settlement.destination_leg;
+                if dest.status == LegStatus::Pending || dest.status == LegStatus::Executing {
+                    if let Err(e) = svc.refund_leg(dest.id).await {
+                        tracing::error!(
+                            leg_id = %dest.id,
+                            error = %e,
+                            "cross_chain_counterpart_refund_failed"
+                        );
+                    } else {
+                        counters::CROSS_CHAIN_LEGS_PROCESSED
+                            .with_label_values(&["refunded"])
+                            .inc();
+                        count += 1;
+                    }
                 }
             }
         }
     }
 
-    if !timed_out.is_empty() {
-        tracing::info!(
-            count = timed_out.len(),
-            "cross_chain_timeouts_processed"
-        );
-    }
+    count
 }
 
-/// Find destination legs ready for execution (source confirmed) and mark them.
-async fn process_ready_destinations(svc: &CrossChainService) {
+// ── Destination leg execution ────────────────────────────
+
+async fn process_ready_destinations(svc: &CrossChainService) -> u32 {
     let ready = match svc.find_ready_destination_legs().await {
         Ok(legs) => legs,
         Err(e) => {
-            tracing::error!(error = %e, "Failed to query ready destination legs");
-            return;
+            tracing::error!(error = %e, "cross_chain_ready_query_failed");
+            return 0;
         }
     };
+
+    let mut count = 0u32;
 
     for leg in &ready {
         tracing::info!(
             leg_id = %leg.id,
             intent_id = %leg.intent_id,
+            fill_id = %leg.fill_id,
             chain = %leg.chain,
+            amount = leg.amount,
             "cross_chain_destination_ready"
         );
 
-        // The actual execution is handled by the settlement engine / wallet service.
-        // Here we just mark the leg as executing to signal it's picked up.
-        // The wallet service will call mark_executing → confirm_leg when the tx lands.
-        if let Err(e) = svc.mark_executing(leg.id, "awaiting_tx").await {
+        if let Err(e) = svc.mark_executing(leg.id, "worker_dispatched").await {
             tracing::error!(
                 leg_id = %leg.id,
                 error = %e,
-                "failed_to_mark_destination_executing"
+                "cross_chain_mark_executing_failed"
             );
+            continue;
+        }
+
+        counters::CROSS_CHAIN_LEGS_PROCESSED
+            .with_label_values(&["executing"])
+            .inc();
+        count += 1;
+    }
+
+    count
+}
+
+// ── Finalize completed settlements ───────────────────────
+
+/// Find settlements where both legs are confirmed and mark the intent Completed.
+async fn finalize_completed(svc: &CrossChainService, pool: &PgPool) -> u32 {
+    // Find fills that have two confirmed legs but the intent is still not Completed
+    let rows = match sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid)>(
+        "SELECT DISTINCT l.fill_id, l.intent_id
+         FROM cross_chain_legs l
+         WHERE l.leg_index = 0
+           AND l.status = 'confirmed'
+           AND EXISTS (
+               SELECT 1 FROM cross_chain_legs l2
+               WHERE l2.fill_id = l.fill_id AND l2.leg_index = 1 AND l2.status = 'confirmed'
+           )
+           AND EXISTS (
+               SELECT 1 FROM intents i
+               WHERE i.id = l.intent_id AND i.status != 'completed'
+           )
+         LIMIT 50",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(error = %e, "cross_chain_finalize_query_failed");
+            return 0;
+        }
+    };
+
+    let mut count = 0u32;
+
+    for (fill_id, intent_id) in &rows {
+        // Mark intent Completed
+        let result = sqlx::query(
+            "UPDATE intents SET status = $1 WHERE id = $2 AND status != 'completed'",
+        )
+        .bind(IntentStatus::Completed)
+        .bind(intent_id)
+        .execute(pool)
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                tracing::info!(
+                    intent_id = %intent_id,
+                    fill_id = %fill_id,
+                    "cross_chain_settlement_completed"
+                );
+                counters::CROSS_CHAIN_LEGS_PROCESSED
+                    .with_label_values(&["confirmed"])
+                    .inc();
+                count += 1;
+            }
+            Ok(_) => {} // already completed
+            Err(e) => {
+                tracing::error!(
+                    intent_id = %intent_id,
+                    error = %e,
+                    "cross_chain_intent_complete_failed"
+                );
+            }
         }
     }
+
+    count
+}
+
+// ── Gauge update ─────────────────────────────────────────
+
+async fn update_pending_gauge(svc: &CrossChainService) {
+    // Count legs in non-terminal states
+    let timed_out = svc.find_timed_out_legs().await.map(|v| v.len()).unwrap_or(0);
+    let ready = svc.find_ready_destination_legs().await.map(|v| v.len()).unwrap_or(0);
+    gauges::CROSS_CHAIN_PENDING_LEGS.set((timed_out + ready) as i64);
 }

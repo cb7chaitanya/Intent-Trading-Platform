@@ -110,3 +110,19 @@ pub static DB_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     REGISTRY.register(Box::new(c.clone())).unwrap();
     c
 });
+
+pub static CROSS_CHAIN_LEGS_PROCESSED: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("cross_chain_legs_processed_total", "Cross-chain legs processed by outcome"),
+        &["outcome"], // "confirmed", "refunded", "failed", "executing"
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
+pub static CROSS_CHAIN_TIMEOUTS_TOTAL: Lazy<IntCounter> = Lazy::new(|| {
+    let c = IntCounter::new("cross_chain_timeouts_total", "Cross-chain legs that timed out").unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});

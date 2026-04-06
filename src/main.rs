@@ -446,6 +446,18 @@ async fn main() {
         wallet::confirmation::run(confirmation_wallet_svc, token).await;
     }));
 
+    // Background task: cross-chain settlement worker
+    let cross_chain_service = Arc::new(cross_chain::service::CrossChainService::new(
+        health_pool.clone(),
+        Arc::clone(&chain_registry),
+    ));
+    let cross_chain_worker_svc = Arc::clone(&cross_chain_service);
+    let cross_chain_worker_pool = health_pool.clone();
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        cross_chain::worker::run(cross_chain_worker_svc, cross_chain_worker_pool, token).await;
+    }));
+
     // Internal request signature verification (only enforce in production)
     let signature_layer = if cfg.environment == "production" || cfg.environment == "docker" {
         Some(

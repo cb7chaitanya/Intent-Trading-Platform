@@ -20,3 +20,9 @@ pub static BIDS_PER_AUCTION: Lazy<IntGauge> = Lazy::new(|| {
     REGISTRY.register(Box::new(g.clone())).unwrap();
     g
 });
+
+pub static CROSS_CHAIN_PENDING_LEGS: Lazy<IntGauge> = Lazy::new(|| {
+    let g = IntGauge::new("cross_chain_pending_legs", "Cross-chain legs in non-terminal state").unwrap();
+    REGISTRY.register(Box::new(g.clone())).unwrap();
+    g
+});

@@ -138,6 +138,19 @@ impl RpcClient {
             .map_err(|e| RpcError::Parse(e.to_string()))
     }
 
+    /// Execute a read-only contract call (eth_call).
+    pub async fn eth_call(&self, to: &str, data: &str) -> Result<String, RpcError> {
+        let resp = self
+            .call(
+                "eth_call",
+                serde_json::json!([{"to": to, "data": data}, "latest"]),
+            )
+            .await?;
+        resp.as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| RpcError::Parse("Expected hex string from eth_call".into()))
+    }
+
     /// Get current gas price.
     pub async fn gas_price(&self) -> Result<i64, RpcError> {
         let resp = self.call("eth_gasPrice", serde_json::json!([])).await?;

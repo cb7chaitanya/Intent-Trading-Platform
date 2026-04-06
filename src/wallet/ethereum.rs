@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use super::chain::*;
+use super::erc20_abi;
 use super::rpc::RpcClient;
 use super::signing;
 
@@ -83,33 +84,71 @@ impl ChainAdapter for EthereumAdapter {
         })
     }
 
-    async fn get_balance(&self, address: &str, _token: &str) -> Result<u64, ChainError> {
-        // For a full implementation, query the ERC-20 contract's balanceOf.
-        // Here we return the ETH balance as a proxy.
-        let nonce = self
+    async fn get_balance(&self, address: &str, token: &str) -> Result<u64, ChainError> {
+        let account = erc20_abi::parse_address(address)
+            .map_err(|e| ChainError::Rpc(format!("Bad address: {e}")))?;
+        let calldata = erc20_abi::encode_balance_of(&account);
+
+        let result = self
             .rpc
-            .get_nonce(address)
+            .eth_call(token, &format!("0x{}", hex::encode(&calldata)))
             .await
             .map_err(|e| ChainError::Rpc(e.to_string()))?;
-        // nonce is a stand-in; real impl would call eth_call with balanceOf ABI
-        Ok(nonce)
+
+        // Result is a hex-encoded uint256. Parse the last 8 bytes as u64.
+        let clean = result.strip_prefix("0x").unwrap_or(&result);
+        let bytes = hex::decode(clean).unwrap_or_default();
+        if bytes.len() >= 32 {
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[24..32]);
+            Ok(u64::from_be_bytes(buf))
+        } else {
+            Ok(0)
+        }
     }
 
     async fn build_settlement_tx(
         &self,
         data: &SettlementData,
     ) -> Result<UnsignedTx, ChainError> {
-        let payload = serde_json::json!({
-            "to": data.to,
-            "from": data.from,
-            "value": data.amount,
-            "token": data.token,
-            "chainId": self.rpc.chain_id(),
-        });
-        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        let to_addr = erc20_abi::parse_address(&data.to)
+            .map_err(|e| ChainError::Rpc(format!("Bad recipient: {e}")))?;
+
+        // Build ERC-20 transfer calldata
+        let calldata = erc20_abi::encode_transfer(&to_addr, data.amount as u128);
+
+        // Fetch nonce for the sender
+        let nonce = self.rpc.get_nonce(&data.from)
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+        let gas_price = self.rpc.gas_price()
+            .await
+            .map_err(|e| ChainError::Rpc(e.to_string()))? as u64;
+
+        // Encode as an EIP-155 unsigned transaction envelope:
+        // [nonce, gasPrice, gasLimit, to (token contract), value (0 for ERC-20), data, chainId, 0, 0]
+        // We serialize as a compact binary format that sign_transaction expects.
+        let token_contract = erc20_abi::parse_address(&data.token)
+            .map_err(|e| ChainError::Rpc(format!("Bad token address: {e}")))?;
+
+        let chain_id = self.rpc.chain_id();
+        let gas_limit: u64 = 65_000;
+
+        let mut tx_data = Vec::with_capacity(256);
+        // Header: chain_id (8) + nonce (8) + gas_price (8) + gas_limit (8) + to (20) + value (8) + calldata
+        tx_data.extend_from_slice(&chain_id.to_be_bytes());     // 8 bytes
+        tx_data.extend_from_slice(&nonce.to_be_bytes());         // 8 bytes
+        tx_data.extend_from_slice(&gas_price.to_be_bytes());     // 8 bytes
+        tx_data.extend_from_slice(&gas_limit.to_be_bytes());     // 8 bytes
+        tx_data.extend_from_slice(&token_contract);               // 20 bytes (to = ERC-20 contract)
+        tx_data.extend_from_slice(&0u64.to_be_bytes());           // 8 bytes (value = 0 for ERC-20)
+        tx_data.extend_from_slice(&(calldata.len() as u32).to_be_bytes()); // 4 bytes calldata length
+        tx_data.extend_from_slice(&calldata);                     // 68 bytes (transfer calldata)
+
         Ok(UnsignedTx {
             chain: "ethereum".into(),
-            data: bytes,
+            data: tx_data,
         })
     }
 

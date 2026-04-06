@@ -1,5 +1,6 @@
 pub mod chain;
 pub mod confirmation;
+pub mod erc20_abi;
 pub mod ethereum;
 pub mod model;
 pub mod registry;

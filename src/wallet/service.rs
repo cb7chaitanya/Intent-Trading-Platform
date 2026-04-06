@@ -284,7 +284,7 @@ impl WalletService {
     ) -> Result<Vec<u8>, WalletError> {
         let private_key = self.decrypt_wallet_key(wallet)?;
         let tx_bytes = serde_json::to_vec(payload).unwrap_or_default();
-        signing::sign_transaction(&private_key, &tx_bytes).map_err(WalletError::SigningError)
+        signing::sign_data(&private_key, &tx_bytes).map_err(WalletError::SigningError)
     }
 
     // ── Read ──────────────────────────────────────────

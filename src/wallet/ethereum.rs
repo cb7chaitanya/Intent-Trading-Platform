@@ -2,9 +2,9 @@ use async_trait::async_trait;
 
 use super::chain::*;
 use super::erc20_abi;
+use super::eth_sign::{self, EthUnsignedTxData};
 use super::rlp;
 use super::rpc::{RpcClient, RpcError};
-use super::signing;
 use crate::metrics::counters;
 
 // ── Gas constants ────────────────────────────────────────
@@ -375,18 +375,35 @@ impl ChainAdapter for EthereumAdapter {
 
         let chain_id = self.rpc.chain_id();
 
-        let tx_bytes = if gas.eip1559 {
-            Self::encode_type2_tx(chain_id, nonce, &gas, &token_contract, &calldata)
+        let tx_data = if gas.eip1559 {
+            EthUnsignedTxData::Eip1559(rlp::Eip1559TxFields {
+                chain_id,
+                nonce,
+                max_priority_fee_per_gas: gas.max_priority_fee,
+                max_fee_per_gas: gas.max_fee_per_gas,
+                gas_limit: gas.gas_limit,
+                to: token_contract,
+                value: 0,
+                data: calldata,
+            })
         } else {
-            Self::encode_legacy_tx(
-                chain_id, nonce, gas.max_fee_per_gas, gas.gas_limit,
-                &token_contract, &calldata,
-            )
+            EthUnsignedTxData::Legacy(rlp::LegacyTxFields {
+                nonce,
+                gas_price: gas.max_fee_per_gas,
+                gas_limit: gas.gas_limit,
+                to: token_contract,
+                value: 0,
+                data: calldata,
+                chain_id,
+            })
         };
+
+        let data = serde_json::to_vec(&tx_data)
+            .map_err(|e| ChainError::Signing(format!("serialize tx: {e}")))?;
 
         Ok(UnsignedTx {
             chain: "ethereum".into(),
-            data: tx_bytes,
+            data,
         })
     }
 
@@ -395,11 +412,18 @@ impl ChainAdapter for EthereumAdapter {
         unsigned_tx: &UnsignedTx,
         private_key: &[u8; 32],
     ) -> Result<SignedTx, ChainError> {
-        let sig = signing::sign_transaction(private_key, &unsigned_tx.data)
-            .map_err(ChainError::Signing)?;
+        let tx_data: EthUnsignedTxData = serde_json::from_slice(&unsigned_tx.data)
+            .map_err(|e| ChainError::Signing(format!("deserialize tx: {e}")))?;
+
+        let signed_bytes = match tx_data {
+            EthUnsignedTxData::Legacy(ref tx) => eth_sign::sign_legacy_tx(tx, private_key),
+            EthUnsignedTxData::Eip1559(ref tx) => eth_sign::sign_eip1559_tx(tx, private_key),
+        }
+        .map_err(ChainError::Signing)?;
+
         Ok(SignedTx {
             chain: "ethereum".into(),
-            data: sig,
+            data: signed_bytes,
         })
     }
 }

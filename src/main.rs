@@ -451,11 +451,24 @@ async fn main() {
         health_pool.clone(),
         Arc::clone(&chain_registry),
     ));
+
+    // Bridge adapter registry
+    let mut bridge_registry = cross_chain::bridge_registry::BridgeRegistry::new();
+    bridge_registry.register(Arc::new(
+        cross_chain::wormhole::WormholeBridge::new("https://wormhole-v2-mainnet-api.certus.one"),
+    ));
+    bridge_registry.register(Arc::new(
+        cross_chain::layerzero::LayerZeroBridge::new("https://scan.layerzero.com/api"),
+    ));
+    let bridge_registry = Arc::new(bridge_registry);
+    tracing::info!(bridges = ?bridge_registry.list_bridges(), "Bridge adapters registered");
+
     let cross_chain_worker_svc = Arc::clone(&cross_chain_service);
+    let cross_chain_worker_bridges = Arc::clone(&bridge_registry);
     let cross_chain_worker_pool = health_pool.clone();
     let token = shutdown.token();
     bg_tasks.push(tokio::spawn(async move {
-        cross_chain::worker::run(cross_chain_worker_svc, cross_chain_worker_pool, token).await;
+        cross_chain::worker::run(cross_chain_worker_svc, cross_chain_worker_bridges, cross_chain_worker_pool, token).await;
     }));
 
     // Internal request signature verification (only enforce in production)

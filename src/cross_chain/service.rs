@@ -190,6 +190,32 @@ impl CrossChainService {
         Ok(CrossChainSettlement::from_legs(legs))
     }
 
+    /// Find source legs (leg_index=0) still in Pending state — need bridge.lock_funds.
+    pub async fn find_pending_source_legs(&self) -> Result<Vec<CrossChainLeg>, CrossChainError> {
+        let legs = sqlx::query_as::<_, CrossChainLeg>(
+            "SELECT * FROM cross_chain_legs
+             WHERE leg_index = 0 AND status = 'pending'
+             ORDER BY created_at ASC
+             LIMIT 50",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(legs)
+    }
+
+    /// Find source legs (leg_index=0) in Escrowed state — need bridge.verify_lock.
+    pub async fn find_escrowed_source_legs(&self) -> Result<Vec<CrossChainLeg>, CrossChainError> {
+        let legs = sqlx::query_as::<_, CrossChainLeg>(
+            "SELECT * FROM cross_chain_legs
+             WHERE leg_index = 0 AND status = 'escrowed'
+             ORDER BY created_at ASC
+             LIMIT 50",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(legs)
+    }
+
     /// Find all legs that have timed out and need refunding.
     pub async fn find_timed_out_legs(&self) -> Result<Vec<CrossChainLeg>, CrossChainError> {
         let now = Utc::now();

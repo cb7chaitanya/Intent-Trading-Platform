@@ -1,5 +1,6 @@
 pub mod bridge;
 pub mod bridge_registry;
+pub mod htlc;
 pub mod layerzero;
 pub mod model;
 pub mod service;

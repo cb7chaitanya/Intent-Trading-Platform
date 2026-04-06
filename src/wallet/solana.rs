@@ -262,16 +262,30 @@ impl ChainAdapter for SolanaAdapter {
         let from_bytes = decode_pubkey(&data.from)?;
         let to_bytes = decode_pubkey(&data.to)?;
 
-        // Build SPL token transfer instruction
-        let transfer_ix = solana_tx::spl_transfer_instruction(
-            from_bytes,
-            to_bytes,
-            from_bytes, // authority = sender
+        // Decode token mint (required for ATA derivation)
+        let mint_bytes = if !data.token.is_empty() && data.token.len() > 10 {
+            // Token field contains a mint address (base58 pubkey)
+            decode_pubkey(&data.token)?
+        } else {
+            // Fallback: native SOL transfer, use system program
+            solana_tx::SYSTEM_PROGRAM
+        };
+
+        // Derive sender's ATA for the source
+        let source_ata = solana_tx::derive_ata(&from_bytes, &mint_bytes);
+
+        // Build instructions: create destination ATA (idempotent) + transfer
+        let instructions = solana_tx::spl_transfer_with_ata(
+            source_ata,
+            to_bytes,     // destination owner
+            mint_bytes,
+            from_bytes,   // authority = sender
             data.amount,
+            from_bytes,   // payer = sender
         );
 
         // Compose transaction message
-        let msg = solana_tx::TransactionMessage::new(from_bytes, blockhash, vec![transfer_ix]);
+        let msg = solana_tx::TransactionMessage::new(from_bytes, blockhash, instructions);
         let serialised = msg.serialise();
 
         Ok(UnsignedTx {

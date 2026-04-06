@@ -2,7 +2,7 @@ use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
 use k256::ecdsa::{signature::Signer, Signature, SigningKey, VerifyingKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Keccak256};
 
 /// Generates a new secp256k1 keypair.
 /// Returns (private_key_bytes, ethereum_address).
@@ -25,10 +25,9 @@ fn derive_address(vk: &VerifyingKey) -> String {
     format!("0x{}", hex::encode(&hash[12..]))
 }
 
-/// Keccak-256 using SHA-256 as a stand-in.
-/// In production, replace with a proper keccak crate.
+/// Keccak-256 hash (the Ethereum variant, NOT NIST SHA-3).
 fn keccak256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
+    let mut hasher = Keccak256::new();
     hasher.update(data);
     hasher.finalize().into()
 }

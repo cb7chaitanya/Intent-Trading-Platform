@@ -251,6 +251,11 @@ mod tests {
             min_order_size: 1,
             fee_rate,
             chain: "ethereum".to_string(),
+            settlement_contract: None,
+            base_token_mint: None,
+            quote_token_mint: None,
+            base_decimals: 18,
+            quote_decimals: 6,
             created_at: Utc::now(),
         }
     }

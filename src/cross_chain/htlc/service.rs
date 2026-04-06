@@ -275,6 +275,34 @@ impl HtlcService {
         Ok(())
     }
 
+    /// Record destination claim without verifying the secret.
+    /// Used by the worker when the claim happens via bridge relay
+    /// rather than direct preimage submission.
+    pub async fn record_dest_claim_unchecked(
+        &self,
+        swap_id: Uuid,
+        claim_tx: &str,
+    ) -> Result<(), HtlcError> {
+        let result = sqlx::query(
+            "UPDATE htlc_swaps
+             SET status = 'dest_claimed', dest_claim_tx = $2, claimed_at = NOW()
+             WHERE id = $1 AND status = 'source_locked'",
+        )
+        .bind(swap_id)
+        .bind(claim_tx)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(HtlcError::InvalidState(
+                "Expected status: source_locked".into(),
+            ));
+        }
+
+        tracing::info!(htlc_id = %swap_id, claim_tx, "htlc_dest_claimed_unchecked");
+        Ok(())
+    }
+
     // ── Step 5: Complete (unlock source) ─────────────
 
     /// Solver used the revealed secret to unlock the source HTLC.

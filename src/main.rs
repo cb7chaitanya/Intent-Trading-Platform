@@ -471,6 +471,17 @@ async fn main() {
         cross_chain::worker::run(cross_chain_worker_svc, cross_chain_worker_bridges, cross_chain_worker_pool, token).await;
     }));
 
+    // Background task: HTLC atomic swap worker
+    let htlc_service = Arc::new(cross_chain::htlc::service::HtlcService::new(
+        health_pool.clone(),
+    ));
+    let htlc_worker_svc = Arc::clone(&htlc_service);
+    let htlc_worker_bridges = Arc::clone(&bridge_registry);
+    let token = shutdown.token();
+    bg_tasks.push(tokio::spawn(async move {
+        cross_chain::htlc::worker::run(htlc_worker_svc, htlc_worker_bridges, token).await;
+    }));
+
     // Internal request signature verification (only enforce in production)
     let signature_layer = if cfg.environment == "production" || cfg.environment == "docker" {
         Some(

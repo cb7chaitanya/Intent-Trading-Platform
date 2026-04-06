@@ -127,6 +127,16 @@ pub static DB_QUERIES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     c
 });
 
+pub static HTLC_SWAPS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    let c = IntCounterVec::new(
+        Opts::new("htlc_swaps_total", "HTLC swaps by outcome"),
+        &["outcome"], // "started", "completed", "refunded", "failed"
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(c.clone())).unwrap();
+    c
+});
+
 pub static CROSS_CHAIN_LEGS_PROCESSED: Lazy<IntCounterVec> = Lazy::new(|| {
     let c = IntCounterVec::new(
         Opts::new("cross_chain_legs_processed_total", "Cross-chain legs processed by outcome"),

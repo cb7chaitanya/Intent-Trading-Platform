@@ -70,6 +70,19 @@ pub static DB_QUERY_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
     h
 });
 
+pub static HTLC_SWAP_DURATION: Lazy<Histogram> = Lazy::new(|| {
+    let h = Histogram::with_opts(
+        HistogramOpts::new(
+            "htlc_swap_duration_seconds",
+            "End-to-end HTLC swap time (created to completed/refunded)",
+        )
+        .buckets(vec![10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0, 1800.0]),
+    )
+    .unwrap();
+    REGISTRY.register(Box::new(h.clone())).unwrap();
+    h
+});
+
 pub static SETTLEMENT_DURATION: Lazy<Histogram> = Lazy::new(|| {
     let h = Histogram::with_opts(
         HistogramOpts::new(

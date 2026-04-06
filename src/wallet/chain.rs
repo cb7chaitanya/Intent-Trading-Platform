@@ -88,6 +88,12 @@ pub trait ChainAdapter: Send + Sync {
     /// Required block confirmations before finalizing.
     fn required_confirmations(&self) -> u32;
 
+    /// Seconds after submission with no receipt before marking as dropped.
+    /// Ethereum: ~600s (10 min), Solana: ~120s (blockhash expiry).
+    fn drop_timeout_secs(&self) -> i64 {
+        600
+    }
+
     /// Send a signed transaction and return the tx hash.
     async fn send_transaction(&self, tx: &SignedTx) -> Result<String, ChainError>;
 

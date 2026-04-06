@@ -67,6 +67,12 @@ impl ChainAdapter for SolanaAdapter {
         31
     }
 
+    fn drop_timeout_secs(&self) -> i64 {
+        // Solana blockhashes expire after ~60-90 seconds.
+        // If no receipt within 120s, the tx is almost certainly dropped.
+        120
+    }
+
     async fn send_transaction(&self, tx: &SignedTx) -> Result<String, ChainError> {
         // Reconstruct SignedTransaction from raw bytes for retry support
         let encoded = solana_signing::bs58_encode(&tx.data);

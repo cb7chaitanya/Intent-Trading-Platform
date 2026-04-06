@@ -190,4 +190,33 @@ impl WalletRepository {
             .await?;
         Ok(())
     }
+
+    pub async fn update_tx_dropped(
+        &self,
+        id: Uuid,
+        reason: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE transactions SET status = 'dropped', error = $2 WHERE id = $1")
+            .bind(id)
+            .bind(reason)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Mark linked fill as needing re-settlement when a tx is finalized.
+    pub async fn mark_fill_on_chain_settled(
+        &self,
+        fill_id: Uuid,
+        tx_hash: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE fills SET tx_hash = $2 WHERE id = $1 AND tx_hash = ''",
+        )
+        .bind(fill_id)
+        .bind(tx_hash)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }

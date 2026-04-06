@@ -12,16 +12,18 @@ import {
   getAccount,
 } from "@solana/spl-token";
 
+import { SOLANA_CONFIG } from "./solana-config";
+
 // ── Constants ────────────────────────────────────────────
 
-const PROGRAM_ID = new PublicKey(
-  process.env.NEXT_PUBLIC_SETTLEMENT_PROGRAM_ID ||
-    "11111111111111111111111111111111"
-);
+const PROGRAM_ID = new PublicKey(SOLANA_CONFIG.settlementProgramId);
+const HTLC_PROGRAM_ID = new PublicKey(SOLANA_CONFIG.htlcProgramId);
 
 const USER_SEED = Buffer.from("user");
 const CONFIG_SEED = Buffer.from("config");
 const VAULT_SEED = Buffer.from("vault");
+const HTLC_SEED = Buffer.from("htlc");
+const ESCROW_SEED = Buffer.from("escrow");
 
 // ── PDA helpers ──────────────────────────────────────────
 
@@ -190,3 +192,27 @@ export async function sendDeposit(params: DepositParams): Promise<string> {
 
   return signature;
 }
+
+// ── HTLC PDA helpers ────────────────────────────────────
+
+export function deriveHtlcPDA(
+  hashlock: Buffer
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [HTLC_SEED, hashlock],
+    HTLC_PROGRAM_ID
+  );
+}
+
+export function deriveEscrowPDA(
+  hashlock: Buffer
+): [PublicKey, number] {
+  return PublicKey.findProgramAddressSync(
+    [ESCROW_SEED, hashlock],
+    HTLC_PROGRAM_ID
+  );
+}
+
+// ── Exports ─────────────────────────────────────────────
+
+export { PROGRAM_ID as SETTLEMENT_PROGRAM_ID, HTLC_PROGRAM_ID };

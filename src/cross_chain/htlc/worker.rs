@@ -63,6 +63,7 @@ pub async fn run(
 
 // ── Phase 1: Lock funds on source chain ──────────────────
 
+#[tracing::instrument(skip_all, name = "htlc.lock_source")]
 async fn phase_lock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u32 {
     let swaps = match htlc.find_pending_locks().await {
         Ok(s) => s,
@@ -254,6 +255,7 @@ async fn phase_claim_destination(htlc: &HtlcService, bridges: &BridgeRegistry) -
 
 // ── Phase 4: Unlock source chain with revealed secret ────
 
+#[tracing::instrument(skip_all, name = "htlc.unlock_source")]
 async fn phase_unlock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u32 {
     let swaps = match htlc.find_pending_unlocks().await {
         Ok(s) => s,
@@ -326,6 +328,7 @@ async fn phase_unlock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u3
 
 // ── Phase 5: Refund expired swaps ────────────────────────
 
+#[tracing::instrument(skip_all, name = "htlc.refund_expired")]
 async fn phase_refund_expired(htlc: &HtlcService) -> u32 {
     let swaps = match htlc.find_expired().await {
         Ok(s) => s,

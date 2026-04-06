@@ -67,6 +67,7 @@ impl IntentService {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(otel.kind = "internal"))]
     pub async fn create_intent(
         &mut self,
         user_id: String,

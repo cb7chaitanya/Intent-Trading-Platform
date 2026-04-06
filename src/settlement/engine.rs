@@ -111,6 +111,7 @@ impl SettlementEngine {
     // ---------------------------------------------------------------
 
     /// Settle a single fill atomically in one transaction.
+    #[tracing::instrument(skip(self), fields(otel.kind = "internal"))]
     pub async fn settle_fill(
         &self,
         fill_id: Uuid,

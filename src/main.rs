@@ -27,6 +27,8 @@ mod shutdown;
 mod solver_reputation;
 mod twap;
 mod users;
+mod telemetry;
+mod telemetry_middleware;
 mod wallet;
 mod workers;
 mod ws;
@@ -67,30 +69,7 @@ use crate::ws::server::WsServer;
 async fn main() {
     let cfg = config::init();
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            format!("intent_trading={lvl},tower_http=info,sqlx=warn", lvl = cfg.log_level).into()
-        });
-
-    let use_json = std::env::var("LOG_FORMAT").unwrap_or_default() == "json"
-        || cfg.environment == "docker"
-        || cfg.environment == "production";
-
-    if use_json {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .json()
-            .with_target(true)
-            .with_current_span(true)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .with_target(true)
-            .with_thread_ids(false)
-            .with_file(false)
-            .init();
-    }
+    telemetry::init(&cfg.log_level, &cfg.environment);
 
     tracing::info!(environment = %cfg.environment, "Starting Intent-Based Trading Platform");
 
@@ -538,7 +517,8 @@ async fn main() {
         .merge(oracle::router(oracle_service))
         .merge(csrf::router(csrf_state));
 
-    let mut app = admin_routes.merge(protected).merge(public);
+    let mut app = admin_routes.merge(protected).merge(public)
+        .layer(axum::middleware::from_fn(telemetry_middleware::trace_layer));
 
     // Apply signature verification in production (gateway signs, platform verifies)
     if let Some(layer) = signature_layer {
@@ -572,4 +552,5 @@ async fn main() {
     shutdown.wait_for_completion(bg_tasks).await;
 
     tracing::info!("Shutdown complete");
+    telemetry::shutdown();
 }

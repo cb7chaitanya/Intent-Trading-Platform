@@ -63,6 +63,7 @@ pub async fn run(
 
 // ── Phase 1: Lock source legs via bridge ─────────────────
 
+#[tracing::instrument(skip_all, name = "cross_chain.lock_sources")]
 async fn lock_pending_sources(svc: &CrossChainService, bridges: &BridgeRegistry) -> u32 {
     let legs = match svc.find_pending_source_legs().await {
         Ok(l) => l,
@@ -109,6 +110,7 @@ async fn lock_pending_sources(svc: &CrossChainService, bridges: &BridgeRegistry)
 
 // ── Phase 2: Verify escrowed source legs ─────────────────
 
+#[tracing::instrument(skip_all, name = "cross_chain.verify_escrowed")]
 async fn verify_escrowed(svc: &CrossChainService, bridges: &BridgeRegistry) -> u32 {
     let legs = match svc.find_escrowed_source_legs().await {
         Ok(l) => l,
@@ -140,6 +142,7 @@ async fn verify_escrowed(svc: &CrossChainService, bridges: &BridgeRegistry) -> u
 
 // ── Phase 3: Release on destination chain ────────────────
 
+#[tracing::instrument(skip_all, name = "cross_chain.release_destinations")]
 async fn release_destinations(svc: &CrossChainService, bridges: &BridgeRegistry) -> u32 {
     let legs = match svc.find_ready_destination_legs().await {
         Ok(l) => l,

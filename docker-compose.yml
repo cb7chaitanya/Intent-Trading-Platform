@@ -83,11 +83,16 @@ services:
       JWT_SECRET: docker-dev-secret-change-in-prod
       LOG_LEVEL: info
       ENVIRONMENT: docker
+      OTEL_ENABLED: "true"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: intentx-trading
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health/live || exit 1"]
       interval: 10s
@@ -219,6 +224,17 @@ services:
     restart: unless-stopped
     profiles:
       - production
+
+  # --------------- Tracing ---------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC receiver
+      - "4318:4318"     # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    restart: unless-stopped
 
 volumes:
   pgdata:

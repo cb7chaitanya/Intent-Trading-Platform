@@ -4,6 +4,7 @@ mod api_keys;
 mod auth;
 mod balances;
 mod cache;
+mod chaos;
 mod circuit_breaker;
 mod config;
 mod cross_chain;
@@ -461,6 +462,21 @@ async fn main() {
     bg_tasks.push(tokio::spawn(async move {
         cross_chain::htlc::worker::run(htlc_worker_svc, htlc_worker_bridges, token).await;
     }));
+
+    // Background task: chaos engine (only when CHAOS_ENABLED=true)
+    let fault_registry = Arc::new(chaos::faults::FaultRegistry::new());
+    if chaos::engine::is_chaos_enabled() {
+        let chaos_registry = Arc::clone(&fault_registry);
+        let token = shutdown.token();
+        bg_tasks.push(tokio::spawn(async move {
+            chaos::engine::run(
+                chaos_registry,
+                chaos::engine::default_schedule(),
+                token,
+            )
+            .await;
+        }));
+    }
 
     // Internal request signature verification (only enforce in production)
     let signature_layer = if cfg.environment == "production" || cfg.environment == "docker" {

@@ -9,6 +9,7 @@ pub mod service;
 pub mod signing;
 pub mod solana;
 pub mod solana_signing;
+pub mod solana_tx;
 
 use std::sync::Arc;
 

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 
 use super::chain::*;
 use super::solana_signing;
+use super::solana_tx;
 
 /// Solana adapter using Ed25519 signing and JSON-RPC to a Solana validator.
 pub struct SolanaAdapter {
@@ -67,18 +68,55 @@ impl ChainAdapter for SolanaAdapter {
     }
 
     async fn send_transaction(&self, tx: &SignedTx) -> Result<String, ChainError> {
+        // Reconstruct SignedTransaction from raw bytes for retry support
         let encoded = solana_signing::bs58_encode(&tx.data);
-        let result = self
-            .rpc_call(
-                "sendTransaction",
-                serde_json::json!([encoded, {"encoding": "base58"}]),
-            )
-            .await?;
 
-        result
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| ChainError::Rpc("Expected tx signature string".into()))
+        // Use retry wrapper for resilience
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [encoded, {
+                "encoding": "base58",
+                "skipPreflight": false,
+                "preflightCommitment": "confirmed",
+            }],
+        });
+
+        let mut last_err = String::new();
+        for attempt in 0..3u32 {
+            let resp = self.client.post(&self.endpoint).json(&body).send().await;
+            match resp {
+                Ok(r) => {
+                    let json: serde_json::Value = r.json().await
+                        .map_err(|e| ChainError::Rpc(e.to_string()))?;
+
+                    if let Some(err) = json.get("error") {
+                        let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown");
+                        if msg.contains("BlockhashNotFound") && attempt < 2 {
+                            tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                            last_err = msg.to_string();
+                            continue;
+                        }
+                        return Err(ChainError::Rpc(msg.to_string()));
+                    }
+
+                    return json.get("result")
+                        .and_then(|r| r.as_str())
+                        .map(|s| s.to_string())
+                        .ok_or_else(|| ChainError::Rpc("Missing result".into()));
+                }
+                Err(e) => {
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                        last_err = e.to_string();
+                        continue;
+                    }
+                    return Err(ChainError::Rpc(e.to_string()));
+                }
+            }
+        }
+        Err(ChainError::Rpc(format!("Max retries exceeded: {last_err}")))
     }
 
     async fn get_transaction_status(&self, tx_hash: &str) -> Result<TxState, ChainError> {
@@ -209,29 +247,30 @@ impl ChainAdapter for SolanaAdapter {
         &self,
         data: &SettlementData,
     ) -> Result<UnsignedTx, ChainError> {
-        let recent_blockhash = self
-            .rpc_call("getLatestBlockhash", serde_json::json!([]))
+        // Fetch recent blockhash
+        let blockhash = solana_tx::fetch_recent_blockhash(&self.client, &self.endpoint)
             .await
-            .ok()
-            .and_then(|v| v.get("value")?.get("blockhash")?.as_str().map(String::from))
-            .unwrap_or_default();
+            .map_err(|e| ChainError::Rpc(e))?;
 
-        // In production: build a proper Solana Transaction with compact-array
-        // header, account keys, recent blockhash, and instructions. For now
-        // we serialise the settlement intent so sign_transaction receives a
-        // deterministic byte payload.
-        let payload = serde_json::json!({
-            "from": data.from,
-            "to": data.to,
-            "amount": data.amount,
-            "token": data.token,
-            "recentBlockhash": recent_blockhash,
-        });
+        // Decode addresses from base58
+        let from_bytes = decode_pubkey(&data.from)?;
+        let to_bytes = decode_pubkey(&data.to)?;
 
-        let bytes = serde_json::to_vec(&payload).unwrap_or_default();
+        // Build SPL token transfer instruction
+        let transfer_ix = solana_tx::spl_transfer_instruction(
+            from_bytes,
+            to_bytes,
+            from_bytes, // authority = sender
+            data.amount,
+        );
+
+        // Compose transaction message
+        let msg = solana_tx::TransactionMessage::new(from_bytes, blockhash, vec![transfer_ix]);
+        let serialised = msg.serialise();
+
         Ok(UnsignedTx {
             chain: "solana".into(),
-            data: bytes,
+            data: serialised,
         })
     }
 
@@ -255,4 +294,13 @@ impl ChainAdapter for SolanaAdapter {
             data: tx_bytes,
         })
     }
+}
+
+/// Decode a base58 pubkey string into 32 bytes.
+fn decode_pubkey(address: &str) -> Result<[u8; 32], ChainError> {
+    let bytes = solana_signing::bs58_decode(address)
+        .map_err(|e| ChainError::Signing(format!("Invalid address: {e}")))?;
+    bytes
+        .try_into()
+        .map_err(|_| ChainError::Signing("Address must be 32 bytes".into()))
 }

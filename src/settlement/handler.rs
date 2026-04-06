@@ -92,7 +92,8 @@ fn map_error(e: SettlementError) -> (StatusCode, String) {
         }
         SettlementError::AlreadySettled => (StatusCode::CONFLICT, e.to_string()),
         SettlementError::InsufficientBalance => (StatusCode::BAD_REQUEST, e.to_string()),
-        SettlementError::FeeError(_) | SettlementError::DbError(_) => {
+        SettlementError::UnsupportedChain(_) => (StatusCode::BAD_REQUEST, e.to_string()),
+        SettlementError::FeeError(_) | SettlementError::ChainError(_) | SettlementError::DbError(_) => {
             (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
         }
     }

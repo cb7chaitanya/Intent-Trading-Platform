@@ -23,6 +23,7 @@ pub enum RiskRejection {
     RateLimitExceeded { limit: u64 },
     DailyVolumeLimitExceeded { used: u64, limit: u64 },
     InvalidAsset(String),
+    MissingChainConfig(String),
 }
 
 impl std::fmt::Display for RiskRejection {
@@ -52,6 +53,7 @@ impl std::fmt::Display for RiskRejection {
                 write!(f, "Daily volume {used} exceeds limit {limit}")
             }
             RiskRejection::InvalidAsset(a) => write!(f, "Invalid asset: {a}"),
+            RiskRejection::MissingChainConfig(msg) => write!(f, "Chain config: {msg}"),
         }
     }
 }
@@ -132,7 +134,20 @@ impl RiskEngine {
         // 1. Resolve market
         let market = self.find_market(&asset_in, &asset_out).await?;
 
-        // 2. Min order size
+        // 2. Validate chain config for on-chain settlement
+        if market.chain != "ethereum" && market.chain != "solana" {
+            return Err(RiskRejection::MissingChainConfig(format!(
+                "Unknown chain: {}", market.chain
+            )));
+        }
+        // Solana markets must have token mint addresses
+        if market.is_solana() && market.base_token_mint.is_none() {
+            return Err(RiskRejection::MissingChainConfig(
+                "Solana market missing base_token_mint".into(),
+            ));
+        }
+
+        // 3. Min order size
         if (params.amount_in as i64) < market.min_order_size {
             return Err(RiskRejection::BelowMinOrderSize {
                 min: market.min_order_size,
@@ -140,14 +155,14 @@ impl RiskEngine {
             });
         }
 
-        // 3. Balance check
+        // 4. Balance check
         self.check_balance(params.account_id, &asset_in, params.amount_in)
             .await?;
 
-        // 4. Price deviation (implied price vs oracle price)
+        // 5. Price deviation (implied price vs oracle price)
         self.check_price_deviation(params.amount_in, params.min_amount_out, &market).await?;
 
-        // 5. Rate limit + daily volume
+        // 6. Rate limit + daily volume
         self.check_user_limits(&params.user_id, params.amount_in)
             .await?;
 

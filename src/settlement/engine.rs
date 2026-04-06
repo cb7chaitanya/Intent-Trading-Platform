@@ -21,6 +21,8 @@ pub enum SettlementError {
     AlreadySettled,
     InsufficientBalance,
     FeeError(String),
+    ChainError(String),
+    UnsupportedChain(String),
     DbError(sqlx::Error),
 }
 
@@ -32,6 +34,8 @@ impl std::fmt::Display for SettlementError {
             SettlementError::AlreadySettled => write!(f, "Already settled"),
             SettlementError::InsufficientBalance => write!(f, "Insufficient balance"),
             SettlementError::FeeError(e) => write!(f, "Fee error: {e}"),
+            SettlementError::ChainError(e) => write!(f, "Chain error: {e}"),
+            SettlementError::UnsupportedChain(c) => write!(f, "Unsupported chain: {c}"),
             SettlementError::DbError(e) => write!(f, "Database error: {e}"),
         }
     }
@@ -228,6 +232,28 @@ impl SettlementEngine {
 
         tracing::info!(fill_id = %fill_id, intent_id = %fill.intent_id, duration_ms, "settle_fill_success");
         Ok(())
+    }
+
+    /// Resolve the chain and settlement contract for a fill's market.
+    /// Returns (chain, settlement_contract, base_token_mint, quote_token_mint).
+    pub async fn resolve_fill_chain(
+        &self,
+        fill_id: Uuid,
+    ) -> Result<(String, Option<String>, Option<String>, Option<String>), SettlementError> {
+        let row = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+            "SELECT m.chain, m.settlement_contract, m.base_token_mint, m.quote_token_mint
+             FROM fills f
+             JOIN intents i ON i.id = f.intent_id
+             JOIN markets m ON UPPER(m.base_asset::text) = UPPER(i.token_in)
+                            AND UPPER(m.quote_asset::text) = UPPER(i.token_out)
+             WHERE f.id = $1
+             LIMIT 1",
+        )
+        .bind(fill_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or(SettlementError::FillNotFound)?;
+        Ok(row)
     }
 
     /// Settle all unsettled fills for an intent, then update intent status.

@@ -39,6 +39,12 @@ pub struct Intent {
     pub stop_price: Option<i64>,
     pub stop_side: Option<String>,
     pub triggered_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Source chain for the input token.
+    pub source_chain: String,
+    /// Destination chain for the output token.
+    pub destination_chain: String,
+    /// True if source_chain != destination_chain.
+    pub cross_chain: bool,
 }
 
 impl Intent {
@@ -65,7 +71,18 @@ impl Intent {
             stop_price: None,
             stop_side: None,
             triggered_at: None,
+            source_chain: "ethereum".to_string(),
+            destination_chain: "ethereum".to_string(),
+            cross_chain: false,
         }
+    }
+
+    /// Set source and destination chains. Automatically sets cross_chain flag.
+    pub fn with_chains(mut self, source: &str, destination: &str) -> Self {
+        self.source_chain = source.to_string();
+        self.destination_chain = destination.to_string();
+        self.cross_chain = source != destination;
+        self
     }
 
     pub fn with_limit(mut self, price: i64) -> Self {

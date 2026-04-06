@@ -266,6 +266,9 @@ mod tests {
             stop_price: None,
             stop_side: None,
             triggered_at: None,
+            source_chain: "ethereum".into(),
+            destination_chain: "ethereum".into(),
+            cross_chain: false,
         }
     }
 

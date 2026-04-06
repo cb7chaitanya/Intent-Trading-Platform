@@ -2,23 +2,36 @@
 //!
 //! Implements manual Solidity ABI encoding without ethers-core dependency.
 //! Each function is encoded as: selector (4 bytes) + arguments (32 bytes each).
+//! Selectors are computed via real Keccak-256 (sha3 crate).
 
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Keccak256};
 
-// ── Keccak-256 substitute ────────────────────────────────
+// ── Keccak-256 ───────────────────────────────────────────
+
+/// Compute the 4-byte Solidity function selector: keccak256(signature)[..4].
+pub fn function_selector(signature: &str) -> [u8; 4] {
+    let hash = Keccak256::digest(signature.as_bytes());
+    let mut sel = [0u8; 4];
+    sel.copy_from_slice(&hash[..4]);
+    sel
+}
+
+/// Compute a full 32-byte Keccak-256 hash.
+pub fn keccak256(data: &[u8]) -> [u8; 32] {
+    Keccak256::digest(data).into()
+}
+
+// ── ERC-20 selectors ─────────────────────────────────────
 //
-// EVM uses keccak256 for function selectors. We approximate with SHA-256
-// here. In production, add the `tiny-keccak` crate for real keccak256.
-// The selector values below are hardcoded from the real keccak256 output
-// so the encoded calldata is correct regardless of hash function used
-// internally.
+// These are the canonical keccak256 selectors. We keep them as `const`
+// for zero-cost usage in hot paths, and verify them against the real
+// keccak256 computation in tests.
 
-/// ERC-20 function selectors (first 4 bytes of keccak256 of signature).
-/// These are well-known constants — no need to compute at runtime.
-pub const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb]; // transfer(address,uint256)
-pub const APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3]; // approve(address,uint256)
-pub const TRANSFER_FROM_SELECTOR: [u8; 4] = [0x23, 0xb8, 0x72, 0xdd]; // transferFrom(address,address,uint256)
-pub const BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31]; // balanceOf(address)
+pub const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+pub const APPROVE_SELECTOR: [u8; 4] = [0x09, 0x5e, 0xa7, 0xb3];
+pub const TRANSFER_FROM_SELECTOR: [u8; 4] = [0x23, 0xb8, 0x72, 0xdd];
+pub const BALANCE_OF_SELECTOR: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+pub const ALLOWANCE_SELECTOR: [u8; 4] = [0xdd, 0x62, 0xed, 0x3e];
 
 // ── ABI encoding helpers ─────────────────────────────────
 
@@ -107,30 +120,58 @@ mod tests {
         a
     }
 
-    // ── Selector constants ───────────────────────────
+    // ── Selector verification via keccak256 ─────────
 
     #[test]
-    fn transfer_selector_is_correct() {
-        // keccak256("transfer(address,uint256)") = 0xa9059cbb...
-        assert_eq!(TRANSFER_SELECTOR, [0xa9, 0x05, 0x9c, 0xbb]);
+    fn transfer_selector_matches_keccak256() {
+        assert_eq!(function_selector("transfer(address,uint256)"), TRANSFER_SELECTOR);
+        assert_eq!(hex::encode(TRANSFER_SELECTOR), "a9059cbb");
     }
 
     #[test]
-    fn approve_selector_is_correct() {
-        // keccak256("approve(address,uint256)") = 0x095ea7b3...
-        assert_eq!(APPROVE_SELECTOR, [0x09, 0x5e, 0xa7, 0xb3]);
+    fn approve_selector_matches_keccak256() {
+        assert_eq!(function_selector("approve(address,uint256)"), APPROVE_SELECTOR);
+        assert_eq!(hex::encode(APPROVE_SELECTOR), "095ea7b3");
     }
 
     #[test]
-    fn transfer_from_selector_is_correct() {
-        // keccak256("transferFrom(address,address,uint256)") = 0x23b872dd...
-        assert_eq!(TRANSFER_FROM_SELECTOR, [0x23, 0xb8, 0x72, 0xdd]);
+    fn transfer_from_selector_matches_keccak256() {
+        assert_eq!(function_selector("transferFrom(address,address,uint256)"), TRANSFER_FROM_SELECTOR);
+        assert_eq!(hex::encode(TRANSFER_FROM_SELECTOR), "23b872dd");
     }
 
     #[test]
-    fn balance_of_selector_is_correct() {
-        // keccak256("balanceOf(address)") = 0x70a08231...
-        assert_eq!(BALANCE_OF_SELECTOR, [0x70, 0xa0, 0x82, 0x31]);
+    fn balance_of_selector_matches_keccak256() {
+        assert_eq!(function_selector("balanceOf(address)"), BALANCE_OF_SELECTOR);
+        assert_eq!(hex::encode(BALANCE_OF_SELECTOR), "70a08231");
+    }
+
+    #[test]
+    fn allowance_selector_matches_keccak256() {
+        assert_eq!(function_selector("allowance(address,address)"), ALLOWANCE_SELECTOR);
+        assert_eq!(hex::encode(ALLOWANCE_SELECTOR), "dd62ed3e");
+    }
+
+    #[test]
+    fn function_selector_deterministic() {
+        let a = function_selector("transfer(address,uint256)");
+        let b = function_selector("transfer(address,uint256)");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn different_signatures_different_selectors() {
+        let a = function_selector("transfer(address,uint256)");
+        let b = function_selector("approve(address,uint256)");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn keccak256_full_hash_is_32_bytes() {
+        let hash = keccak256(b"hello");
+        assert_eq!(hash.len(), 32);
+        // Known: keccak256("hello") = 1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8
+        assert_eq!(hex::encode(hash), "1c8aff950685c2ed4bc3174f3472287b56d9517b9c948127319a09a7a36deac8");
     }
 
     // ── Address encoding ─────────────────────────────

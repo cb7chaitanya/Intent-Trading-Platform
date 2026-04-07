@@ -98,17 +98,19 @@ impl TwapService {
         .bind(&twap.status).bind(twap.created_at)
         .execute(&self.pool).await?;
 
-        // Generate child intent schedule
+        // Generate child intent schedule.
+        // intent_id is set to nil until the scheduler submits the real intent.
+        // The scheduler updates it to the actual intent ID after submission.
+        let nil_intent = Uuid::nil();
         for i in 0..slices_total {
             let scheduled_at = now + Duration::seconds(req.interval_secs * i as i64);
             let slice_qty = if i == slices_total - 1 { qty_per_slice + remainder } else { qty_per_slice };
-            let intent_id = Uuid::new_v4(); // placeholder until actually submitted
 
             sqlx::query(
                 "INSERT INTO twap_child_intents (twap_id, intent_id, slice_index, qty, status, scheduled_at)
                  VALUES ($1, $2, $3, $4, 'pending', $5)",
             )
-            .bind(id).bind(intent_id).bind(i).bind(slice_qty).bind(scheduled_at)
+            .bind(id).bind(nil_intent).bind(i).bind(slice_qty).bind(scheduled_at)
             .execute(&self.pool).await?;
         }
 
@@ -132,21 +134,23 @@ impl TwapService {
             return Err(TwapError::AlreadyCancelled);
         }
 
-        // Cancel all pending children
+        // Cancel all pending/submitted children that have real intent IDs
         let pending = sqlx::query_as::<_, TwapChildIntent>(
-            "SELECT * FROM twap_child_intents WHERE twap_id = $1 AND status = 'pending'",
+            "SELECT * FROM twap_child_intents WHERE twap_id = $1 AND status IN ('pending', 'submitted')",
         )
         .bind(twap_id).fetch_all(&self.pool).await?;
 
         for child in &pending {
-            // Cancel the actual intent if it was submitted
-            let mut svc = self.intent_service.lock().await;
-            let _ = svc.cancel_intent(&child.intent_id, account_id).await;
+            // Only cancel intents that were actually submitted (non-nil ID)
+            if !child.intent_id.is_nil() {
+                let mut svc = self.intent_service.lock().await;
+                let _ = svc.cancel_intent(&child.intent_id, account_id).await;
+            }
         }
 
         // Mark children as cancelled
         sqlx::query(
-            "UPDATE twap_child_intents SET status = 'cancelled' WHERE twap_id = $1 AND status = 'pending'",
+            "UPDATE twap_child_intents SET status = 'cancelled' WHERE twap_id = $1 AND status IN ('pending', 'submitted')",
         )
         .bind(twap_id).execute(&self.pool).await?;
 

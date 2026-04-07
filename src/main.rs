@@ -443,7 +443,11 @@ async fn main() {
             .with_chain_rpc("base", &std::env::var("BASE_RPC_URL").unwrap_or_else(|_| "https://base.llamarpc.com".into())),
     ));
     bridge_registry.register(Arc::new(
-        cross_chain::layerzero::LayerZeroBridge::new("https://scan.layerzero.com/api"),
+        cross_chain::layerzero::LayerZeroBridge::new("https://scan.layerzero.com/api")
+            .with_chain_rpc("ethereum", &std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "https://eth.llamarpc.com".into()))
+            .with_chain_rpc("polygon", &std::env::var("POLYGON_RPC_URL").unwrap_or_else(|_| "https://polygon.llamarpc.com".into()))
+            .with_chain_rpc("arbitrum", &std::env::var("ARBITRUM_RPC_URL").unwrap_or_else(|_| "https://arbitrum.llamarpc.com".into()))
+            .with_chain_rpc("base", &std::env::var("BASE_RPC_URL").unwrap_or_else(|_| "https://base.llamarpc.com".into())),
     ));
     let bridge_registry = Arc::new(bridge_registry);
     tracing::info!(bridges = ?bridge_registry.list_bridges(), "Bridge adapters registered");

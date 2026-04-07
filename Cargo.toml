@@ -69,3 +69,4 @@ testcontainers-modules = { version = "0.15", features = ["postgres", "redis"] }
 [features]
 integration = []
 e2e = []
+devnet = []

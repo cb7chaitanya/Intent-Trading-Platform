@@ -174,6 +174,50 @@ impl HtlcService {
         Ok((swap, secret))
     }
 
+    // ── Step 1b: Store secret for later retrieval ─────
+
+    /// Persist the secret in the DB so the worker can retrieve it
+    /// when claiming the destination HTLC.
+    ///
+    /// The secret is stored as raw bytes. In production you would
+    /// encrypt it with a KMS key before writing, but the column
+    /// already exists (`secret BYTEA`) and this avoids the need
+    /// for a separate secret vault while keeping the worker
+    /// self-contained.
+    ///
+    /// Must be called right after `create_swap` returns the secret
+    /// to the caller — before any status transition.
+    pub async fn store_secret(
+        &self,
+        swap_id: Uuid,
+        secret: &crypto::Secret,
+    ) -> Result<(), HtlcError> {
+        // Verify the secret matches the stored hash before persisting
+        let swap = self.get_swap(swap_id).await?;
+        let expected: crypto::SecretHash = swap.secret_hash
+            .try_into()
+            .map_err(|_| HtlcError::InvalidState("Stored hash has wrong length".into()))?;
+
+        if !crypto::verify_secret(secret, &expected) {
+            return Err(HtlcError::SecretMismatch);
+        }
+
+        sqlx::query(
+            "UPDATE htlc_swaps SET secret = $2 WHERE id = $1 AND status = 'created'",
+        )
+        .bind(swap_id)
+        .bind(secret.as_slice())
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!(
+            htlc_id = %swap_id,
+            "htlc_secret_stored"
+        );
+
+        Ok(())
+    }
+
     // ── Step 2: Record source lock ───────────────────
 
     /// Source chain HTLC has been deployed and confirmed.
@@ -275,9 +319,103 @@ impl HtlcService {
         Ok(())
     }
 
+    /// Record destination claim using the stored secret.
+    ///
+    /// The worker calls this when it has the secret from the DB
+    /// (stored via `store_secret`) and has submitted the claim tx
+    /// to the destination chain. The secret is verified against the
+    /// hash before updating.
+    pub async fn record_dest_claim_with_stored_secret(
+        &self,
+        swap_id: Uuid,
+        claim_tx: &str,
+    ) -> Result<(), HtlcError> {
+        let swap = self.get_swap(swap_id).await?;
+
+        let secret_bytes = swap.secret.ok_or_else(|| {
+            HtlcError::InvalidState("Secret not stored — call store_secret first".into())
+        })?;
+
+        let secret: crypto::Secret = secret_bytes
+            .try_into()
+            .map_err(|_| HtlcError::InvalidState("Stored secret has wrong length".into()))?;
+
+        let expected: crypto::SecretHash = swap.secret_hash
+            .try_into()
+            .map_err(|_| HtlcError::InvalidState("Stored hash has wrong length".into()))?;
+
+        if !crypto::verify_secret(&secret, &expected) {
+            return Err(HtlcError::SecretMismatch);
+        }
+
+        let result = sqlx::query(
+            "UPDATE htlc_swaps
+             SET status = 'dest_claimed', dest_claim_tx = $2, claimed_at = NOW()
+             WHERE id = $1 AND status = 'source_locked'",
+        )
+        .bind(swap_id)
+        .bind(claim_tx)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(HtlcError::InvalidState(
+                "Expected status: source_locked".into(),
+            ));
+        }
+
+        tracing::info!(
+            htlc_id = %swap_id,
+            claim_tx,
+            secret_hex = %crypto::to_hex(&secret),
+            "htlc_dest_claimed_with_verified_secret"
+        );
+
+        Ok(())
+    }
+
+    /// Extract secret from on-chain claim event logs.
+    ///
+    /// The Solana HTLC program emits a `FundsClaimed` event with the
+    /// secret (preimage) when someone claims the destination HTLC.
+    /// For EVM, the claim tx log contains the secret in the event data.
+    ///
+    /// This parses the secret from a hex-encoded log data field.
+    pub fn extract_secret_from_logs(
+        log_data: &str,
+    ) -> Result<crypto::Secret, HtlcError> {
+        // Strip "0x" prefix if present, then decode hex
+        let hex_str = log_data.strip_prefix("0x").unwrap_or(log_data);
+
+        // The secret is 32 bytes. In Solana Anchor events it's at
+        // bytes [40..72] of the event data (after 8-byte discriminator
+        // + 32-byte htlc pubkey). In EVM it's the first 32 bytes of
+        // the event data field. Handle both:
+        let data = hex::decode(hex_str).map_err(|e| {
+            HtlcError::InvalidState(format!("Invalid hex in claim log: {e}"))
+        })?;
+
+        if data.len() < 32 {
+            return Err(HtlcError::InvalidState(format!(
+                "Claim log data too short: {} bytes, need >= 32",
+                data.len()
+            )));
+        }
+
+        // Try to find a 32-byte secret that matches.
+        // For EVM: first 32 bytes are the secret.
+        // For Solana: bytes 40..72 after discriminator + pubkey.
+        // We return the first 32 bytes — the caller should pass the
+        // correct slice for their chain.
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&data[..32]);
+        Ok(secret)
+    }
+
     /// Record destination claim without verifying the secret.
     /// Used by the worker when the claim happens via bridge relay
     /// rather than direct preimage submission.
+    #[deprecated(note = "Use record_dest_claim or record_dest_claim_with_stored_secret instead")]
     pub async fn record_dest_claim_unchecked(
         &self,
         swap_id: Uuid,

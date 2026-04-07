@@ -17,7 +17,6 @@ use crate::cross_chain::bridge_registry::BridgeRegistry;
 use crate::metrics::{counters, histograms};
 
 use super::crypto;
-use super::model::HtlcStatus;
 use super::service::HtlcService;
 
 const POLL_INTERVAL_SECS: u64 = 5;
@@ -183,26 +182,53 @@ async fn phase_claim_destination(htlc: &HtlcService, bridges: &BridgeRegistry) -
 
     let mut n = 0u32;
     for swap in &swaps {
-        // We need the secret to claim. The secret was generated at create_swap
-        // time but not stored in the DB (only the hash). The caller must have
-        // kept it. However, for the worker flow, we generate it at creation
-        // and store the hash. The secret is only available if the swap was
-        // created through our service (which returns the secret to the caller).
-        //
-        // In the worker model, we need the secret stored somewhere accessible.
-        // We'll check if it's already in the DB (stored after a previous
-        // partial claim attempt) or derive it from a KMS/vault.
-        //
-        // For now, if the secret isn't in the DB, we skip — the API layer
-        // or a separate key manager must supply it via record_dest_claim().
+        // Retrieve the secret from the DB. It must have been stored
+        // via store_secret() right after create_swap().
+        let secret: crypto::Secret = match &swap.secret {
+            Some(s) if s.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(s);
+                arr
+            }
+            Some(s) => {
+                tracing::error!(
+                    htlc_id = %swap.id,
+                    len = s.len(),
+                    "htlc_stored_secret_wrong_length"
+                );
+                let _ = htlc.fail_swap(swap.id, "Stored secret has wrong length").await;
+                counters::HTLC_SWAPS_TOTAL.with_label_values(&["failed"]).inc();
+                continue;
+            }
+            None => {
+                tracing::warn!(
+                    htlc_id = %swap.id,
+                    "htlc_no_secret_stored_skipping_claim"
+                );
+                continue;
+            }
+        };
 
-        if swap.secret.is_some() {
-            // Secret already revealed — skip (shouldn't be in claimable query)
+        // Verify the secret matches the hash before using it on-chain
+        let expected: crypto::SecretHash = match swap.secret_hash.clone().try_into() {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::error!(htlc_id = %swap.id, "htlc_hash_wrong_length");
+                let _ = htlc.fail_swap(swap.id, "Secret hash wrong length").await;
+                continue;
+            }
+        };
+
+        if !crypto::verify_secret(&secret, &expected) {
+            tracing::error!(
+                htlc_id = %swap.id,
+                "htlc_secret_does_not_match_hash"
+            );
+            let _ = htlc.fail_swap(swap.id, "Stored secret does not match hash").await;
+            counters::HTLC_SWAPS_TOTAL.with_label_values(&["failed"]).inc();
             continue;
         }
 
-        // In production: retrieve secret from secure storage using swap.id
-        // For the bridge flow: call release_funds which acts as claiming
         let bridge = match bridges.find(&swap.source_chain, &swap.dest_chain) {
             Ok(b) => b,
             Err(_) => continue,
@@ -217,21 +243,15 @@ async fn phase_claim_destination(htlc: &HtlcService, bridges: &BridgeRegistry) -
             recipient: swap.dest_receiver.clone(),
         };
 
-        let msg_id = format!("htlc_{}", swap.id);
+        // The message_id encodes the secret hex so the bridge adapter
+        // can include it in the on-chain claim transaction calldata.
+        let msg_id = format!("htlc_secret_{}", crypto::to_hex(&secret));
 
         match bridge.release_funds(&params, &msg_id).await {
             Ok(claim_tx) => {
-                // For the bridge-based flow, the claim doesn't reveal
-                // a secret on-chain. We generate a placeholder secret
-                // hash to satisfy the DB constraint. In a real HTLC
-                // on-chain flow, the secret would come from the chain event.
-                let secret_placeholder: [u8; 32] = crypto::generate_secret();
-                let hash_check = crypto::hash_secret(&secret_placeholder);
-
-                // Only record if hash matches (it won't for placeholder — use swap's hash)
-                // In production: extract secret from dest chain claim tx event log
+                // Record the claim with the verified secret
                 if let Err(e) = htlc
-                    .record_dest_claim_unchecked(swap.id, &claim_tx)
+                    .record_dest_claim(swap.id, &secret, &claim_tx)
                     .await
                 {
                     tracing::warn!(htlc_id = %swap.id, error = %e, "htlc_claim_record_failed");
@@ -241,7 +261,8 @@ async fn phase_claim_destination(htlc: &HtlcService, bridges: &BridgeRegistry) -
                 tracing::info!(
                     htlc_id = %swap.id,
                     claim_tx = %claim_tx,
-                    "htlc_dest_claimed"
+                    secret_hex = %crypto::to_hex(&secret),
+                    "htlc_dest_claimed_with_secret"
                 );
                 n += 1;
             }
@@ -279,14 +300,35 @@ async fn phase_unlock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u3
             }
         };
 
-        // Use the revealed secret to unlock the source HTLC
+        // Verify the secret against the stored hash one more time
+        // before submitting to the source chain. This guards against
+        // DB corruption or a buggy claim phase.
+        let expected: crypto::SecretHash = match swap.secret_hash.clone().try_into() {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::error!(htlc_id = %swap.id, "htlc_hash_wrong_length_in_unlock");
+                continue;
+            }
+        };
+
+        if !crypto::verify_secret(&secret, &expected) {
+            tracing::error!(
+                htlc_id = %swap.id,
+                "htlc_secret_hash_mismatch_in_unlock"
+            );
+            let _ = htlc.fail_swap(swap.id, "Secret/hash mismatch at unlock").await;
+            counters::HTLC_SWAPS_TOTAL.with_label_values(&["failed"]).inc();
+            continue;
+        }
+
         let bridge = match bridges.find(&swap.source_chain, &swap.dest_chain) {
             Ok(b) => b,
             Err(_) => continue,
         };
 
-        // In production: submit secret to source chain HTLC contract's claim()
-        // For bridge flow: the bridge handles it via release_funds
+        // Submit the secret to the source chain HTLC contract.
+        // The message_id carries the secret hex so the bridge adapter
+        // can build the claim(secret) calldata.
         let params = BridgeTransferParams {
             source_chain: swap.source_chain.clone(),
             dest_chain: swap.dest_chain.clone(),
@@ -296,7 +338,7 @@ async fn phase_unlock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u3
             recipient: swap.source_receiver.clone(),
         };
 
-        let msg = format!("secret_{}", crypto::to_hex(&secret));
+        let msg = format!("htlc_unlock_{}", crypto::to_hex(&secret));
 
         match bridge.release_funds(&params, &msg).await {
             Ok(unlock_tx) => {
@@ -305,7 +347,6 @@ async fn phase_unlock_source(htlc: &HtlcService, bridges: &BridgeRegistry) -> u3
                     continue;
                 }
 
-                // Record duration
                 let duration = (chrono::Utc::now() - swap.created_at).num_seconds().max(0) as f64;
                 histograms::HTLC_SWAP_DURATION.observe(duration);
                 counters::HTLC_SWAPS_TOTAL.with_label_values(&["completed"]).inc();

@@ -174,6 +174,40 @@ export const getTopSolvers = (limit = 10) =>
 export const getSolver = (id: string) =>
   api.get(`/solvers/${id}`).then((r) => r.data);
 
+// Cross-Chain
+export const createCrossChainIntent = (data: {
+  user_id: string;
+  account_id: string;
+  token_in: string;
+  token_out: string;
+  amount_in: number;
+  min_amount_out: number;
+  deadline: number;
+  source_chain: string;
+  destination_chain: string;
+}) => api.post("/intents", { ...data, cross_chain: true }).then((r) => r.data);
+
+export const getCrossChainSettlement = (fillId: string) =>
+  api.get(`/cross-chain/settlement/${fillId}`).then((r) => r.data);
+
+export const getCrossChainLegs = (intentId: string) =>
+  api.get(`/cross-chain/legs/${intentId}`).then((r) => r.data);
+
+export const getBridgeRoutes = (source: string, dest: string) =>
+  api
+    .get("/cross-chain/routes", { params: { source, dest } })
+    .then((r) => r.data);
+
+export const getBridgeFeeEstimate = (data: {
+  source_chain: string;
+  dest_chain: string;
+  token: string;
+  amount: number;
+}) =>
+  api
+    .get("/cross-chain/fee-estimate", { params: data })
+    .then((r) => r.data);
+
 // Health
 export const getHealthReady = () =>
   api.get("/health/ready").then((r) => r.data);

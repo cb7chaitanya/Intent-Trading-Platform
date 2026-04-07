@@ -11,8 +11,11 @@ use std::time::Duration;
 use rand::Rng;
 use tokio_util::sync::CancellationToken;
 
+use sqlx::PgPool;
+
 use super::faults::{FaultConfig, FaultKind, FaultRegistry};
 use super::report::ChaosReport;
+use super::verify::InvariantChecker;
 
 /// Default chaos schedule: all fault types with conservative probabilities.
 pub fn default_schedule() -> Vec<FaultConfig> {
@@ -79,10 +82,23 @@ pub fn is_chaos_enabled() -> bool {
 
 /// Run the chaos engine. Periodically evaluates each fault's probability,
 /// activates faults, and deactivates after their duration expires.
+///
+/// If a `PgPool` is provided, runs invariant verification on shutdown
+/// to detect funds lost, double settlements, or stuck HTLCs.
 pub async fn run(
     registry: Arc<FaultRegistry>,
     schedule: Vec<FaultConfig>,
     cancel: CancellationToken,
+) {
+    run_with_pool(registry, schedule, cancel, None).await;
+}
+
+/// Same as `run` but with a database pool for post-chaos invariant checks.
+pub async fn run_with_pool(
+    registry: Arc<FaultRegistry>,
+    schedule: Vec<FaultConfig>,
+    cancel: CancellationToken,
+    pool: Option<PgPool>,
 ) {
     if !is_chaos_enabled() {
         tracing::info!("Chaos testing disabled (set CHAOS_ENABLED=true to enable)");
@@ -153,6 +169,20 @@ pub async fn run(
                     "Chaos engine shutting down"
                 );
                 report.log_summary();
+
+                // Run invariant verification if we have a DB connection
+                if let Some(ref db) = pool {
+                    tracing::info!("Running post-chaos invariant verification...");
+                    let invariant_report = InvariantChecker::new(db).run_all().await;
+                    invariant_report.log();
+                    if !invariant_report.passed() {
+                        tracing::error!(
+                            violations = invariant_report.violations.len(),
+                            "POST-CHAOS INVARIANT VIOLATIONS DETECTED"
+                        );
+                    }
+                }
+
                 return;
             }
         }

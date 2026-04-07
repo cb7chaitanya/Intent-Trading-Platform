@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { X, RefreshCw } from "lucide-react";
 import { getIntents, cancelIntent, getTradeHistory } from "@/lib/api";
 import { useWebSocket } from "@/contexts/WebSocketProvider";
+import { SettlementTracker } from "@/components/cross-chain";
 
 type Tab = "open" | "history";
 
@@ -18,6 +19,9 @@ interface Intent {
   stop_price?: number;
   stop_side?: string;
   created_at: number;
+  cross_chain?: boolean;
+  source_chain?: string;
+  destination_chain?: string;
 }
 
 interface Trade {
@@ -194,6 +198,11 @@ const OpenOrders: React.FC<OpenOrdersProps> = ({ marketId }) => {
                     >
                       {intent.status}
                     </span>
+                    {intent.cross_chain && (
+                      <div className="mt-1">
+                        <SettlementTracker intentId={intent.id} compact />
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right text-[var(--text-muted)] font-mono">
                     {new Date(intent.created_at * 1000).toLocaleTimeString(

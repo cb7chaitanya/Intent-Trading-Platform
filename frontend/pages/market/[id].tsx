@@ -10,6 +10,7 @@ import TradeFeed from "@/components/trade-feed/TradeFeed";
 import IntentForm from "@/components/intent-form/IntentForm";
 import BalancesPanel from "@/components/balances/BalancesPanel";
 import OpenOrders from "@/components/open-orders/OpenOrders";
+import { CrossChainForm } from "@/components/cross-chain";
 
 interface Market {
   id: string;
@@ -28,6 +29,7 @@ export default function TradingPage() {
   const [market, setMarket] = useState<Market | null>(null);
   const [oraclePrice, setOraclePrice] = useState<number | null>(null);
   const [selectedPrice, setSelectedPrice] = useState<number | undefined>();
+  const [tradeMode, setTradeMode] = useState<"single" | "cross">("single");
   const { subscribe, unsubscribe, connected } = useWebSocket();
 
   useEffect(() => {
@@ -154,17 +156,49 @@ export default function TradingPage() {
 
         {/* Right: Intent Form + Balances */}
         <div className="col-span-3 border-l flex flex-col overflow-hidden">
-          {/* Intent form */}
+          {/* Trade mode tabs */}
+          <div className="flex border-b shrink-0">
+            <button
+              onClick={() => setTradeMode("single")}
+              className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+                tradeMode === "single"
+                  ? "text-[var(--text-primary)] border-b-2 border-brand-500"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              Trade
+            </button>
+            <button
+              onClick={() => setTradeMode("cross")}
+              className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+                tradeMode === "cross"
+                  ? "text-[var(--text-primary)] border-b-2 border-brand-500"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+              }`}
+            >
+              Cross-Chain
+            </button>
+          </div>
+
+          {/* Form (switches based on mode) */}
           <div className="flex-1 min-h-0 overflow-hidden">
-            <IntentForm
-              marketId={marketId}
-              baseAsset={market?.base_asset}
-              quoteAsset={market?.quote_asset}
-              tickSize={market?.tick_size}
-              minOrderSize={market?.min_order_size}
-              onOrderPlaced={handleOrderPlaced}
-              initialPrice={selectedPrice}
-            />
+            {tradeMode === "single" ? (
+              <IntentForm
+                marketId={marketId}
+                baseAsset={market?.base_asset}
+                quoteAsset={market?.quote_asset}
+                tickSize={market?.tick_size}
+                minOrderSize={market?.min_order_size}
+                onOrderPlaced={handleOrderPlaced}
+                initialPrice={selectedPrice}
+              />
+            ) : (
+              <CrossChainForm
+                baseAsset={market?.base_asset}
+                quoteAsset={market?.quote_asset}
+                onOrderPlaced={handleOrderPlaced}
+              />
+            )}
           </div>
 
           {/* Balances */}
